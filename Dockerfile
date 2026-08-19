@@ -102,7 +102,7 @@ RUN echo "Cache bust: $CACHE_BUST"
 # Non-root runtime user (D34 — issue #1234 PR 5), created before the COPYs below so
 # they can set ownership with --chown. A `chown -R` in a later RUN would rewrite every
 # file into a new layer, storing /app and /opt/venv in the image twice.
-RUN groupadd -r -g 1001 app && useradd -r -u 1001 -g app -s /usr/sbin/nologin app
+RUN groupadd -r -g 1001 app && useradd -r -u 1001 -g app -d /home/app -s /usr/sbin/nologin app
 
 # Copy application code
 COPY --chown=app:app . .
@@ -126,14 +126,16 @@ COPY config/nginx/nginx-development.conf /etc/nginx/nginx-development.conf
 # -P mode never follows a symlink argument into its target, so chowning /var/run only
 # relabels the symlink itself and leaves the real directory (where nginx writes its
 # pidfile) root-owned.
-RUN mkdir -p /var/log/nginx /var/run && \
+RUN mkdir -p /home/app/.cache /var/log/nginx /var/run && \
     chown app:app /app /opt/venv && \
-    chown -R app:app /var/log/nginx /var/lib/nginx /run /etc/nginx/nginx.conf
+    chown -R app:app /home/app /var/log/nginx /var/lib/nginx /run /etc/nginx/nginx.conf
 
 # Venv on PATH; PYTHONPATH points at bind-mounted source in dev compose
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV PYTHONUNBUFFERED=1
+ENV HOME=/home/app
+ENV XDG_CACHE_HOME=/home/app/.cache
 
 # Default port
 ENV ADCP_PORT=8080
