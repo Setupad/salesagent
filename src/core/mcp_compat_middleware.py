@@ -178,7 +178,7 @@ class RequestCompatMiddleware(Middleware):
             tool = await server.get_tool(tool_name)
             if tool is None:
                 return None
-            return tool.parameters
+            return getattr(tool, "_compat_parameters", tool.parameters)
         except Exception:
             logger.debug("Could not look up schema for %s, skipping deep strip", tool_name)
             return None
@@ -200,7 +200,8 @@ class RequestCompatMiddleware(Middleware):
             tool = await server.get_tool(tool_name)
             if tool is None:
                 return None
-            return set(tool.parameters.get("properties", {}).keys())
+            parameters = getattr(tool, "_compat_parameters", tool.parameters)
+            return set(parameters.get("properties", {}).keys())
         except Exception:
             logger.debug("Could not look up params for %s, skipping strip", tool_name)
             return None
