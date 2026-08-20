@@ -346,6 +346,10 @@ def _register_tool(fn: Any) -> None:
         if sdk_def.get("annotations"):
             kwargs["annotations"] = ToolAnnotations(**sdk_def["annotations"])
     mcp.tool(**kwargs)(with_error_logging(fn))
+    if sdk_def and sdk_def.get("inputSchema"):
+        tool = mcp._local_provider._components[f"tool:{tool_name}@"]
+        tool._compat_parameters = tool.parameters
+        tool.parameters = sdk_def["inputSchema"]
 
 
 _register_tool(list_accounts)
