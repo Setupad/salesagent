@@ -47,6 +47,7 @@ from src.landing.landing_page import generate_fallback_landing_page
 from src.routes.api_v1 import router as api_v1_router
 from src.routes.health import debug_router as health_debug_router
 from src.routes.health import router as health_router
+from src.routes.oauth import router as oauth_router
 from src.routes.well_known import router as well_known_router
 from src.services.seller_capabilities import describe_seller
 
@@ -526,6 +527,7 @@ async def a2a_messageid_compatibility_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 app.include_router(api_v1_router)
+app.include_router(oauth_router)
 
 
 def _openapi_with_rest_components() -> dict[str, Any]:

@@ -9,9 +9,18 @@ inside the session so the resolver keeps what was loaded.
 
 import logging
 
+from sqlalchemy.orm import Session
+
 from src.core.credentials import hash_token
 from src.core.database.database_session import execute_with_retry
+from src.core.database.repositories.oauth_client import OAuthClientRepository
 from src.core.database.repositories.principal import PrincipalRepository
+from src.core.oauth_service import (
+    OAuthTokenValidationError,
+    get_mcp_oauth_audience,
+    get_mcp_oauth_issuer,
+    validate_mcp_access_token,
+)
 from src.core.schemas import Principal
 
 logger = logging.getLogger(__name__)
@@ -28,7 +37,12 @@ def get_principal_from_token(token: str, tenant_id: str) -> Principal | None:
 
     token_hash = hash_token(token)
 
-    def _lookup_principal(session):
+    def _lookup_principal(session: Session) -> Principal | None:
+        if token.count(".") == 2:
+            principal = _lookup_oauth_principal(session, token, tenant_id)
+            if principal is not None:
+                return principal
+
         row = PrincipalRepository(session, tenant_id).find_by_token_hash(token_hash)
         return Principal.from_row(row) if row else None
 
@@ -69,3 +83,28 @@ def get_principal_by_id(tenant_id: str, principal_id: str) -> Principal | None:
         return Principal.from_row(row) if row else None
 
     return execute_with_retry(_lookup_principal)
+
+
+def _lookup_oauth_principal(session: Session, token: str, tenant_id: str) -> Principal | None:
+    try:
+        claims = validate_mcp_access_token(
+            token,
+            issuer=get_mcp_oauth_issuer(),
+            audience=get_mcp_oauth_audience(),
+        )
+    except OAuthTokenValidationError:
+        return None
+
+    if claims.tenant_id != tenant_id:
+        return None
+
+    oauth_client = OAuthClientRepository(session).get_active_client(
+        tenant_id=tenant_id,
+        client_id=claims.client_id,
+        principal_id=claims.principal_id,
+    )
+    if not oauth_client:
+        return None
+
+    row = PrincipalRepository(session, tenant_id).get(claims.principal_id)
+    return Principal.from_row(row) if row else None

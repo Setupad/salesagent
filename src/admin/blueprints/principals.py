@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from adcp.types import AuthenticationScheme
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
@@ -14,9 +15,11 @@ from src.admin.utils import require_tenant_access
 from src.admin.utils.audit_decorator import log_admin_action, record_admin_action_failure
 from src.core.database.database_session import get_db_session
 from src.core.database.models import MediaBuy, PushNotificationConfig, Tenant
+from src.core.database.repositories.oauth_client import OAuthClientRepository
 from src.core.database.repositories.principal import PrincipalRepository
 from src.core.database.repositories.uow import PushNotificationConfigUoW
 from src.core.exceptions import AdCPValidationError
+from src.core.oauth_service import generate_oauth_client_credentials
 from src.core.webhook_validator import webhook_url_for_log
 from src.core.webhooks.registration import accept_push_notification_primitives
 
@@ -183,6 +186,13 @@ def create_principal(tenant_id):
                 "enabled": True,
             }
 
+        oauth_redirect_uris, redirect_uri_error = _parse_oauth_redirect_uris(
+            request.form.get("oauth_redirect_uris", "")
+        )
+        if redirect_uri_error:
+            flash(redirect_uri_error, "error")
+            return redirect(request.url)
+
         with get_db_session() as db_session:
             # No duplicate-name pre-check: advertiser names are human-readable
             # labels, not keys. AdCP 3.1.1 attaches uniqueness only to ids
@@ -200,13 +210,24 @@ def create_principal(tenant_id):
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )
+            oauth_credentials = generate_oauth_client_credentials()
+            OAuthClientRepository(db_session).create_for_principal(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                credentials=oauth_credentials,
+                redirect_uris=oauth_redirect_uris,
+                created_at=datetime.now(UTC),
+            )
             db_session.commit()
 
-            flash(
-                f"Advertiser '{principal_name}' created. Its API token, shown only now: {token}",
-                "success",
+            return render_template(
+                "principal_created.html",
+                tenant_id=tenant_id,
+                principal_name=principal_name,
+                access_token=token,
+                oauth_client_id=oauth_credentials.client_id,
+                oauth_client_secret=oauth_credentials.client_secret,
             )
-            return redirect(url_for("tenants.tenant_settings", tenant_id=tenant_id, section="advertisers"))
 
     except Exception as e:
         logger.error(f"Error creating principal: {e}", exc_info=True)
@@ -244,6 +265,17 @@ def edit_principal(tenant_id, principal_id):
                 gam_mapping = mappings.get("google_ad_manager", {})
                 existing_gam_id = gam_mapping.get("advertiser_id")
 
+            oauth_client = OAuthClientRepository(db_session).get_active_client(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                client_id=request.args.get("oauth_client_id", ""),
+            )
+            if not oauth_client:
+                oauth_client = OAuthClientRepository(db_session).get_active_client_by_principal(
+                    tenant_id=tenant_id,
+                    principal_id=principal_id,
+                )
+
             return render_template(
                 "create_principal.html",
                 tenant_id=tenant_id,
@@ -252,6 +284,8 @@ def edit_principal(tenant_id, principal_id):
                 edit_mode=True,
                 principal=principal,
                 existing_gam_id=existing_gam_id,
+                oauth_client=oauth_client,
+                oauth_redirect_uris=oauth_client.redirect_uris if oauth_client else [],
             )
 
     # POST - Update the principal
@@ -286,6 +320,21 @@ def edit_principal(tenant_id, principal_id):
 
             principal.platform_mappings = platform_mappings
             principal.updated_at = datetime.now(UTC)
+
+            oauth_redirect_uris, redirect_uri_error = _parse_oauth_redirect_uris(
+                request.form.get("oauth_redirect_uris", "")
+            )
+            if redirect_uri_error:
+                flash(redirect_uri_error, "error")
+                return redirect(request.url)
+
+            oauth_client = OAuthClientRepository(db_session).get_active_client_by_principal(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+            )
+            if oauth_client:
+                oauth_client.redirect_uris = oauth_redirect_uris
+                oauth_client.updated_at = datetime.now(UTC)
             db_session.commit()
 
             flash(f"Advertiser '{principal.name}' updated successfully", "success")
@@ -295,6 +344,35 @@ def edit_principal(tenant_id, principal_id):
         logger.error(f"Error updating principal: {e}", exc_info=True)
         flash("Error updating advertiser", "error")
         return redirect(request.url)
+
+
+def _parse_oauth_redirect_uris(raw_value: str) -> tuple[list[str], str | None]:
+    redirect_uris: list[str] = []
+    seen: set[str] = set()
+    for line in raw_value.splitlines():
+        redirect_uri = line.strip()
+        if not redirect_uri or redirect_uri in seen:
+            continue
+        validation_error = _validate_oauth_redirect_uri(redirect_uri)
+        if validation_error:
+            return [], validation_error
+        seen.add(redirect_uri)
+        redirect_uris.append(redirect_uri)
+    return redirect_uris, None
+
+
+def _validate_oauth_redirect_uri(redirect_uri: str) -> str | None:
+    parsed = urlsplit(redirect_uri)
+    if not parsed.scheme or not parsed.netloc:
+        return f"OAuth redirect URI must be absolute: {redirect_uri}"
+    if parsed.fragment:
+        return f"OAuth redirect URI must not include a fragment: {redirect_uri}"
+    hostname = parsed.hostname or ""
+    if parsed.scheme == "https":
+        return None
+    if parsed.scheme == "http" and hostname in {"localhost", "127.0.0.1"}:
+        return None
+    return f"OAuth redirect URI must use HTTPS unless it is localhost: {redirect_uri}"
 
 
 @principals_bp.route("/principal/<principal_id>", methods=["GET"])
