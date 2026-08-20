@@ -173,6 +173,37 @@ After the local health check passes, verify the public HTTPS domain:
 curl -fsS https://<salesagent-domain>/health
 ```
 
+## MCP OAuth Checks
+
+MCP OAuth metadata and access-token audience validation depend on the public
+sales agent URL. Before deploying MCP OAuth changes, verify `/opt/salesagent/.env`
+contains the correct public domain settings without printing secret values:
+
+```bash
+ssh root@209.38.235.125 '
+  set -eu
+  cd /opt/salesagent
+  grep -E "^(SALES_AGENT_DOMAIN|MCP_OAUTH_ISSUER|MCP_OAUTH_AUDIENCE)=" .env | sed "s/=.*$/=<set>/"
+'
+```
+
+For the default configuration, `SALES_AGENT_DOMAIN=<salesagent-domain>` is enough.
+Set `MCP_OAUTH_ISSUER` or `MCP_OAUTH_AUDIENCE` only when the public OAuth issuer
+or canonical MCP resource URL differs from `https://<salesagent-domain>` and
+`https://<salesagent-domain>/mcp`.
+
+After deployment, verify the OAuth discovery documents over public HTTPS:
+
+```bash
+curl -fsS https://<salesagent-domain>/.well-known/oauth-protected-resource
+curl -fsS https://<salesagent-domain>/.well-known/oauth-authorization-server
+```
+
+New advertisers receive both the existing permanent API token and OAuth client
+credentials. OAuth-capable MCP clients should request a short-lived token from
+`/oauth/token` using `grant_type=client_credentials` and `resource=https://<salesagent-domain>/mcp`,
+then call `/mcp` with `Authorization: Bearer <access-token>`.
+
 ## Rollback
 
 If the rollout fails before migrations complete, retag the previous image digest
