@@ -16,14 +16,21 @@ def test_oauth_metadata_routes_advertise_authorization_code_and_client_credentia
     client = _test_client()
 
     protected_resource = client.get("/.well-known/oauth-protected-resource")
+    scoped_protected_resource = client.get("/.well-known/oauth-protected-resource/mcp")
     authorization_server = client.get("/.well-known/oauth-authorization-server")
 
     assert protected_resource.status_code == 200
     assert protected_resource.json()["resource"] == "https://agent.example.com/mcp"
     assert protected_resource.json()["authorization_servers"] == ["https://agent.example.com"]
+    assert scoped_protected_resource.status_code == 200
+    assert scoped_protected_resource.json() == protected_resource.json()
     assert authorization_server.status_code == 200
     assert authorization_server.json()["authorization_endpoint"] == "https://agent.example.com/authorize"
     assert authorization_server.json()["grant_types_supported"] == ["authorization_code", "client_credentials"]
+    assert authorization_server.json()["token_endpoint_auth_methods_supported"] == [
+        "client_secret_basic",
+        "client_secret_post",
+    ]
     assert authorization_server.json()["response_types_supported"] == ["code"]
     assert authorization_server.json()["code_challenge_methods_supported"] == ["S256"]
     assert "registration_endpoint" not in authorization_server.json()
@@ -208,6 +215,7 @@ def test_oauth_authorization_code_pkce_flow_issues_access_token_and_rejects_reus
         data={
             "grant_type": "authorization_code",
             "client_id": "mcp_client_abc",
+            "client_secret": "secret",
             "code": "mcp_code_test",
             "redirect_uri": redirect_uri,
             "code_verifier": verifier,
@@ -219,8 +227,39 @@ def test_oauth_authorization_code_pkce_flow_issues_access_token_and_rejects_reus
     assert reuse_response.json()["error"] == "invalid_grant"
 
 
+def test_oauth_authorization_code_token_requires_client_secret(monkeypatch):
+    monkeypatch.setattr("src.routes.oauth.get_mcp_oauth_audience", lambda: "https://agent.example.com/mcp")
+    monkeypatch.setattr(
+        "src.routes.oauth._load_oauth_client",
+        lambda client_id: _OAuthClientAuthResult(
+            tenant_id="tenant_123",
+            principal_id="principal_456",
+            client_id=client_id,
+            client_secret_hash="stored_hash",
+            scopes=["mcp:principal"],
+            redirect_uris=["https://client.example.com/oauth/callback"],
+        ),
+    )
+
+    response = _test_client().post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "client_id": "mcp_client_abc",
+            "code": "mcp_code_test",
+            "redirect_uri": "https://client.example.com/oauth/callback",
+            "code_verifier": "verifier",
+            "resource": "https://agent.example.com/mcp",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "invalid_client"
+
+
 def test_oauth_authorization_code_token_rejects_wrong_pkce_verifier(monkeypatch):
     monkeypatch.setattr("src.routes.oauth.get_mcp_oauth_audience", lambda: "https://agent.example.com/mcp")
+    monkeypatch.setattr("src.routes.oauth.verify_client_secret", lambda secret, stored_hash: secret == "secret")
     monkeypatch.setattr(
         "src.routes.oauth._load_oauth_client",
         lambda client_id: _OAuthClientAuthResult(
@@ -253,6 +292,7 @@ def test_oauth_authorization_code_token_rejects_wrong_pkce_verifier(monkeypatch)
         data={
             "grant_type": "authorization_code",
             "client_id": "mcp_client_abc",
+            "client_secret": "secret",
             "code": "mcp_code_test",
             "redirect_uri": "https://client.example.com/oauth/callback",
             "code_verifier": "wrong-verifier",

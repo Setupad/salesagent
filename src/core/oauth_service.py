@@ -22,6 +22,18 @@ DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600
 DEFAULT_AUTHORIZATION_CODE_LIFETIME_SECONDS = 300
 _SECRET_HASH_ITERATIONS = 390_000
 _JWT_ALGORITHM = "HS256"
+_JWT_LEEWAY_SECONDS = 30
+_REQUIRED_ACCESS_TOKEN_CLAIMS = [
+    "iss",
+    "aud",
+    "sub",
+    "tenant_id",
+    "principal_id",
+    "client_id",
+    "iat",
+    "exp",
+    "jti",
+]
 
 
 class OAuthTokenValidationError(ValueError):
@@ -172,20 +184,15 @@ def validate_mcp_access_token(
             token,
             signing_key or _get_signing_key(),
             algorithms=[_JWT_ALGORITHM],
-            options={"verify_aud": False, "verify_exp": False, "verify_iss": False},
+            audience=audience,
+            issuer=issuer,
+            leeway=_JWT_LEEWAY_SECONDS,
+            options={"require": _REQUIRED_ACCESS_TOKEN_CLAIMS},
         )
     except jwt.PyJWTError as exc:
         raise OAuthTokenValidationError("Invalid OAuth access token") from exc
 
-    _validate_required_claims(payload)
-    current_time = now or datetime.now(UTC)
-
-    if payload["iss"] != issuer:
-        raise OAuthTokenValidationError("Invalid OAuth access token issuer")
-    if payload["aud"] != audience:
-        raise OAuthTokenValidationError("Invalid OAuth access token audience")
-    if int(payload["exp"]) <= int(current_time.timestamp()):
-        raise OAuthTokenValidationError("OAuth access token has expired")
+    _validate_oauth_claims(payload)
 
     return MCPAccessTokenClaims(
         tenant_id=str(payload["tenant_id"]),
@@ -219,29 +226,16 @@ def get_mcp_oauth_audience() -> str:
     return f"{get_mcp_oauth_issuer()}/mcp"
 
 
-def _validate_required_claims(payload: dict[str, Any]) -> None:
-    required_claims = {
-        "iss",
-        "aud",
-        "sub",
-        "tenant_id",
-        "principal_id",
-        "client_id",
-        "iat",
-        "exp",
-        "jti",
-    }
-    if missing_claims := sorted(required_claims - set(payload)):
-        raise OAuthTokenValidationError(f"OAuth access token is missing required claims: {', '.join(missing_claims)}")
+def _validate_oauth_claims(payload: dict[str, Any]) -> None:
+    if not all(str(payload.get(claim) or "") for claim in ("tenant_id", "principal_id", "client_id", "jti")):
+        raise OAuthTokenValidationError("OAuth access token is missing required principal claims")
 
 
 def _get_signing_key() -> str:
-    signing_key = os.environ.get("MCP_OAUTH_JWT_SECRET") or os.environ.get("FLASK_SECRET_KEY")
+    signing_key = os.environ.get("MCP_OAUTH_JWT_SECRET")
     if signing_key:
         return signing_key
-    if os.environ.get("PRODUCTION") == "true":
-        raise RuntimeError("MCP_OAUTH_JWT_SECRET or FLASK_SECRET_KEY must be set in production")
-    return "development-mcp-oauth-secret"
+    raise RuntimeError("MCP_OAUTH_JWT_SECRET must be set before issuing or validating MCP OAuth tokens")
 
 
 def _get_public_protocol() -> str:

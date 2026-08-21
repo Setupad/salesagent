@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 from sqlalchemy import func, select
 
 from src.admin.services import DashboardService
@@ -143,7 +143,7 @@ def create_principal(tenant_id):
         principal_name = request.form.get("name", "").strip()
         if not principal_name:
             flash("Principal name is required", "error")
-            return redirect(request.url)
+            return redirect(url_for("principals.create_principal", tenant_id=tenant_id))
 
         # Generate unique ID and token
         principal_id = f"prin_{uuid.uuid4().hex[:8]}"
@@ -164,7 +164,7 @@ def create_principal(tenant_id):
                     "Please select a valid advertiser from the dropdown.",
                     "error",
                 )
-                return redirect(request.url)
+                return redirect(url_for("principals.create_principal", tenant_id=tenant_id))
 
             platform_mappings["google_ad_manager"] = {
                 "advertiser_id": gam_advertiser_id,
@@ -183,14 +183,14 @@ def create_principal(tenant_id):
         )
         if redirect_uri_error:
             flash(redirect_uri_error, "error")
-            return redirect(request.url)
+            return redirect(url_for("principals.create_principal", tenant_id=tenant_id))
 
         with get_db_session() as db_session:
             # Check if principal name already exists
             existing = db_session.scalars(select(Principal).filter_by(tenant_id=tenant_id, name=principal_name)).first()
             if existing:
                 flash(f"An advertiser named '{principal_name}' already exists", "error")
-                return redirect(request.url)
+                return redirect(url_for("principals.create_principal", tenant_id=tenant_id))
 
             # Create the principal
             principal = Principal(
@@ -214,19 +214,29 @@ def create_principal(tenant_id):
             )
             db_session.commit()
 
-            return render_template(
-                "principal_created.html",
-                tenant_id=tenant_id,
-                principal_name=principal_name,
-                access_token=access_token,
-                oauth_client_id=oauth_credentials.client_id,
-                oauth_client_secret=oauth_credentials.client_secret,
-            )
+        session["principal_created_credentials"] = {
+            "tenant_id": tenant_id,
+            "principal_name": principal_name,
+            "access_token": access_token,
+            "oauth_client_id": oauth_credentials.client_id,
+            "oauth_client_secret": oauth_credentials.client_secret,
+        }
+        return redirect(url_for("principals.principal_created", tenant_id=tenant_id))
 
     except Exception as e:
         logger.error(f"Error creating principal: {e}", exc_info=True)
         flash("Error creating advertiser", "error")
-        return redirect(request.url)
+        return redirect(url_for("principals.create_principal", tenant_id=tenant_id))
+
+
+@principals_bp.route("/principals/created", methods=["GET"])
+@require_tenant_access()
+def principal_created(tenant_id):
+    created_credentials = session.pop("principal_created_credentials", None)
+    if not created_credentials or created_credentials.get("tenant_id") != tenant_id:
+        return redirect(url_for("tenants.tenant_settings", tenant_id=tenant_id, section="advertisers"))
+
+    return render_template("principal_created.html", **created_credentials)
 
 
 @principals_bp.route("/principals/<principal_id>/edit", methods=["GET", "POST"])
@@ -309,7 +319,9 @@ def edit_principal(tenant_id, principal_id):
                     int(gam_advertiser_id)
                 except (ValueError, TypeError):
                     flash("GAM Advertiser ID must be numeric", "error")
-                    return redirect(request.url)
+                    return redirect(
+                        url_for("principals.edit_principal", tenant_id=tenant_id, principal_id=principal_id)
+                    )
 
                 platform_mappings["google_ad_manager"] = {
                     "advertiser_id": gam_advertiser_id,
@@ -319,20 +331,23 @@ def edit_principal(tenant_id, principal_id):
             principal.platform_mappings = platform_mappings
             principal.updated_at = datetime.now(UTC)
 
-            oauth_redirect_uris, redirect_uri_error = _parse_oauth_redirect_uris(
-                request.form.get("oauth_redirect_uris", "")
-            )
-            if redirect_uri_error:
-                flash(redirect_uri_error, "error")
-                return redirect(request.url)
+            if "oauth_redirect_uris" in request.form:
+                oauth_redirect_uris, redirect_uri_error = _parse_oauth_redirect_uris(
+                    request.form.get("oauth_redirect_uris", "")
+                )
+                if redirect_uri_error:
+                    flash(redirect_uri_error, "error")
+                    return redirect(
+                        url_for("principals.edit_principal", tenant_id=tenant_id, principal_id=principal_id)
+                    )
 
-            oauth_client = OAuthClientRepository(db_session).get_active_client_by_principal(
-                tenant_id=tenant_id,
-                principal_id=principal_id,
-            )
-            if oauth_client:
-                oauth_client.redirect_uris = oauth_redirect_uris
-                oauth_client.updated_at = datetime.now(UTC)
+                oauth_client = OAuthClientRepository(db_session).get_active_client_by_principal(
+                    tenant_id=tenant_id,
+                    principal_id=principal_id,
+                )
+                if oauth_client:
+                    oauth_client.redirect_uris = oauth_redirect_uris
+                    oauth_client.updated_at = datetime.now(UTC)
             db_session.commit()
 
             flash(f"Advertiser '{principal.name}' updated successfully", "success")
@@ -341,7 +356,7 @@ def edit_principal(tenant_id, principal_id):
     except Exception as e:
         logger.error(f"Error updating principal: {e}", exc_info=True)
         flash("Error updating advertiser", "error")
-        return redirect(request.url)
+        return redirect(url_for("principals.edit_principal", tenant_id=tenant_id, principal_id=principal_id))
 
 
 def _parse_oauth_redirect_uris(raw_value: str) -> tuple[list[str], str | None]:
