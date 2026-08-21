@@ -8,6 +8,7 @@ from sqlalchemy import select
 from src.core.database.database_session import execute_with_retry
 from src.core.database.models import Principal, Tenant
 from src.core.database.repositories.oauth_client import OAuthClientRepository
+from src.core.database.repositories.tenant import TenantRepository
 from src.core.oauth_service import (
     OAuthTokenValidationError,
     get_mcp_oauth_audience,
@@ -104,7 +105,8 @@ def _lookup_oauth_principal(session, token: str, tenant_id: str | None) -> tuple
             issuer=get_mcp_oauth_issuer(),
             audience=get_mcp_oauth_audience(),
         )
-    except OAuthTokenValidationError:
+    except OAuthTokenValidationError as exc:
+        logger.debug("OAuth access token validation failed: %s", exc)
         return None, None
 
     if tenant_id and claims.tenant_id != tenant_id:
@@ -118,8 +120,7 @@ def _lookup_oauth_principal(session, token: str, tenant_id: str | None) -> tuple
     if not oauth_client:
         return None, None
 
-    tenant_stmt = select(Tenant).filter_by(tenant_id=claims.tenant_id, is_active=True)
-    tenant = session.scalars(tenant_stmt).first()
+    tenant = TenantRepository(session).get_active(claims.tenant_id)
     if not tenant:
         return None, None
 

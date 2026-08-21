@@ -132,7 +132,9 @@ class Tenant(Base, JSONValidatorMixin):
     # Relationships
     products = relationship("Product", back_populates="tenant", cascade="all, delete-orphan")
     principals = relationship("Principal", back_populates="tenant", cascade="all, delete-orphan")
-    oauth_clients = relationship("OAuthClient", back_populates="tenant", cascade="all, delete-orphan")
+    oauth_clients = relationship(
+        "OAuthClient", back_populates="tenant", cascade="all, delete-orphan", overlaps="principal"
+    )
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
     accounts = relationship("Account", back_populates="tenant", cascade="all, delete-orphan")
     media_buys = relationship("MediaBuy", back_populates="tenant", cascade="all, delete-orphan", overlaps="media_buys")
@@ -555,7 +557,12 @@ class Principal(Base, JSONValidatorMixin):
     tenant = relationship("Tenant", back_populates="principals")
     media_buys = relationship("MediaBuy", back_populates="principal", overlaps="media_buys")
     strategies = relationship("Strategy", back_populates="principal", overlaps="strategies")
-    oauth_clients = relationship("OAuthClient", back_populates="principal", cascade="all, delete-orphan")
+    oauth_clients = relationship(
+        "OAuthClient",
+        back_populates="principal",
+        cascade="all, delete-orphan",
+        overlaps="oauth_clients,tenant",
+    )
     push_notification_configs = relationship(
         "PushNotificationConfig",
         back_populates="principal",
@@ -594,8 +601,13 @@ class OAuthClient(Base):
     )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    tenant = relationship("Tenant", back_populates="oauth_clients")
-    principal = relationship("Principal", back_populates="oauth_clients")
+    tenant = relationship("Tenant", back_populates="oauth_clients", overlaps="principal")
+    principal = relationship(
+        "Principal",
+        back_populates="oauth_clients",
+        overlaps="oauth_clients,tenant",
+        foreign_keys=[tenant_id, principal_id],
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(

@@ -74,25 +74,6 @@ CREATE TABLE IF NOT EXISTS principals (
     FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS oauth_clients (
-    tenant_id VARCHAR(50) NOT NULL,
-    client_id VARCHAR(120) NOT NULL,
-    principal_id VARCHAR(100) NOT NULL,
-    client_secret_hash VARCHAR(500) NOT NULL,
-    scopes JSONB NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    last_used_at TIMESTAMPTZ,
-    PRIMARY KEY (tenant_id, client_id),
-    UNIQUE (client_id),
-    FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE,
-    FOREIGN KEY (tenant_id, principal_id) REFERENCES principals(tenant_id, principal_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_oauth_clients_client_id ON oauth_clients(client_id);
-CREATE INDEX IF NOT EXISTS idx_oauth_clients_tenant_principal ON oauth_clients(tenant_id, principal_id);
-
 CREATE TABLE IF NOT EXISTS users (
     user_id VARCHAR(50) PRIMARY KEY,
     tenant_id VARCHAR(50) NOT NULL,
