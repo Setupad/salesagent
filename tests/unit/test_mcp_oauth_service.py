@@ -1,7 +1,10 @@
 import base64
 import hashlib
-from datetime import UTC, datetime
+import os
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
+import jwt
 import pytest
 
 from src.core.oauth_service import (
@@ -26,6 +29,7 @@ def test_generate_oauth_client_credentials_returns_one_time_secret_and_hash():
 
 
 def test_issue_and_validate_mcp_access_token_returns_principal_claims():
+    issued_at = datetime.now(UTC)
     token = issue_mcp_access_token(
         tenant_id="tenant_123",
         principal_id="principal_456",
@@ -33,14 +37,16 @@ def test_issue_and_validate_mcp_access_token_returns_principal_claims():
         issuer="https://agent.example.com",
         audience="https://agent.example.com/mcp",
         scopes=["mcp:principal"],
-        now=datetime(2026, 8, 19, 12, 0, tzinfo=UTC),
+        now=issued_at,
+        signing_key="test-signing-secret-with-at-least-32-bytes",
     )
 
     claims = validate_mcp_access_token(
         token,
         issuer="https://agent.example.com",
         audience="https://agent.example.com/mcp",
-        now=datetime(2026, 8, 19, 12, 1, tzinfo=UTC),
+        now=issued_at + timedelta(minutes=1),
+        signing_key="test-signing-secret-with-at-least-32-bytes",
     )
 
     assert claims.tenant_id == "tenant_123"
@@ -58,7 +64,8 @@ def test_validate_mcp_access_token_rejects_wrong_audience():
         issuer="https://agent.example.com",
         audience="https://agent.example.com/mcp",
         scopes=["mcp:principal"],
-        now=datetime(2026, 8, 19, 12, 0, tzinfo=UTC),
+        now=datetime.now(UTC),
+        signing_key="test-signing-secret-with-at-least-32-bytes",
     )
 
     with pytest.raises(OAuthTokenValidationError):
@@ -66,7 +73,8 @@ def test_validate_mcp_access_token_rejects_wrong_audience():
             token,
             issuer="https://agent.example.com",
             audience="https://other.example.com/mcp",
-            now=datetime(2026, 8, 19, 12, 1, tzinfo=UTC),
+            now=datetime.now(UTC),
+            signing_key="test-signing-secret-with-at-least-32-bytes",
         )
 
 
@@ -95,8 +103,9 @@ def test_validate_mcp_access_token_rejects_expired_token():
         issuer="https://agent.example.com",
         audience="https://agent.example.com/mcp",
         scopes=["mcp:principal"],
-        now=datetime(2026, 8, 19, 12, 0, tzinfo=UTC),
+        now=datetime.now(UTC) - timedelta(minutes=2),
         lifetime_seconds=60,
+        signing_key="test-signing-secret-with-at-least-32-bytes",
     )
 
     with pytest.raises(OAuthTokenValidationError):
@@ -104,5 +113,48 @@ def test_validate_mcp_access_token_rejects_expired_token():
             token,
             issuer="https://agent.example.com",
             audience="https://agent.example.com/mcp",
-            now=datetime(2026, 8, 19, 12, 2, tzinfo=UTC),
+            now=datetime.now(UTC),
+            signing_key="test-signing-secret-with-at-least-32-bytes",
+        )
+
+
+def test_issue_mcp_access_token_requires_configured_signing_secret():
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(RuntimeError, match="MCP_OAUTH_JWT_SECRET"):
+            issue_mcp_access_token(
+                tenant_id="tenant_123",
+                principal_id="principal_456",
+                client_id="mcp_client_abc",
+                issuer="https://agent.example.com",
+                audience="https://agent.example.com/mcp",
+            )
+
+
+def test_validate_mcp_access_token_uses_pyjwt_claim_validation():
+    token = issue_mcp_access_token(
+        tenant_id="tenant_123",
+        principal_id="principal_456",
+        client_id="mcp_client_abc",
+        issuer="https://agent.example.com",
+        audience="https://agent.example.com/mcp",
+        scopes=["mcp:principal"],
+        now=datetime.now(UTC),
+        signing_key="test-signing-secret-with-at-least-32-bytes",
+    )
+    payload = jwt.decode(
+        token,
+        "test-signing-secret-with-at-least-32-bytes",
+        algorithms=["HS256"],
+        options={"verify_signature": False},
+    )
+    payload.pop("jti")
+    token_without_jti = jwt.encode(payload, "test-signing-secret-with-at-least-32-bytes", algorithm="HS256")
+
+    with pytest.raises(OAuthTokenValidationError):
+        validate_mcp_access_token(
+            token_without_jti,
+            issuer="https://agent.example.com",
+            audience="https://agent.example.com/mcp",
+            now=datetime.now(UTC),
+            signing_key="test-signing-secret-with-at-least-32-bytes",
         )

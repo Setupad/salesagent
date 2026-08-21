@@ -53,6 +53,7 @@ class _OAuthAuthorizationCodeResult:
 
 
 @router.get("/.well-known/oauth-protected-resource")
+@router.get("/.well-known/oauth-protected-resource/mcp")
 async def oauth_protected_resource_metadata() -> dict:
     issuer = get_mcp_oauth_issuer()
     return {
@@ -71,7 +72,7 @@ async def oauth_authorization_server_metadata() -> dict:
         "authorization_endpoint": f"{issuer}/authorize",
         "token_endpoint": f"{issuer}/oauth/token",
         "grant_types_supported": ["authorization_code", "client_credentials"],
-        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
         "response_types_supported": ["code"],
         "code_challenge_methods_supported": ["S256"],
         "scopes_supported": [DEFAULT_MCP_OAUTH_SCOPE],
@@ -144,13 +145,10 @@ def _oauth_client_credentials_token(request: Request, form) -> JSONResponse:
     if resource != get_mcp_oauth_audience():
         return _oauth_error("invalid_target", "The requested resource is not this MCP server", 400)
 
-    client_id, client_secret = _extract_client_auth(request, form)
-    if not client_id or not client_secret:
-        return _oauth_error("invalid_client", "Client authentication is required", 401)
-
-    oauth_client = _load_oauth_client(client_id)
-    if not oauth_client or not verify_client_secret(client_secret, oauth_client.client_secret_hash):
-        return _oauth_error("invalid_client", "Client authentication failed", 401)
+    authenticated_client = _authenticate_confidential_client(request, form)
+    if isinstance(authenticated_client, JSONResponse):
+        return authenticated_client
+    oauth_client = authenticated_client
 
     requested_scopes = _parse_requested_scopes(str(form.get("scope") or ""), oauth_client.scopes)
     if requested_scopes is None:
@@ -167,15 +165,7 @@ def _oauth_client_credentials_token(request: Request, form) -> JSONResponse:
         now=now,
     )
 
-    return JSONResponse(
-        {
-            "access_token": access_token,
-            "token_type": "Bearer",
-            "expires_in": DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS,
-            "scope": " ".join(requested_scopes),
-        },
-        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
-    )
+    return _oauth_token_response(access_token, requested_scopes)
 
 
 def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
@@ -183,18 +173,13 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
     if resource != get_mcp_oauth_audience():
         return _oauth_error("invalid_target", "The requested resource is not this MCP server", 400)
 
-    client_id, client_secret = _extract_client_auth(request, form)
-    if not client_id:
-        return _oauth_error("invalid_client", "Client ID is required", 401)
-
-    oauth_client = _load_oauth_client(client_id)
-    if not oauth_client:
-        return _oauth_error("invalid_client", "Client authentication failed", 401)
-    if client_secret and not verify_client_secret(client_secret, oauth_client.client_secret_hash):
-        return _oauth_error("invalid_client", "Client authentication failed", 401)
+    authenticated_client = _authenticate_confidential_client(request, form)
+    if isinstance(authenticated_client, JSONResponse):
+        return authenticated_client
+    oauth_client = authenticated_client
 
     authorization_code = _load_authorization_code(str(form.get("code") or ""))
-    if not authorization_code or authorization_code.client_id != client_id:
+    if not authorization_code or authorization_code.client_id != oauth_client.client_id:
         return _oauth_error("invalid_grant", "Authorization code is invalid", 400)
     if authorization_code.redirect_uri != str(form.get("redirect_uri") or ""):
         return _oauth_error("invalid_grant", "Redirect URI does not match authorization request", 400)
@@ -223,12 +208,27 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
         now=datetime.now(UTC),
     )
 
+    return _oauth_token_response(access_token, authorization_code.scopes)
+
+
+def _authenticate_confidential_client(request: Request, form) -> _OAuthClientAuthResult | JSONResponse:
+    client_id, client_secret = _extract_client_auth(request, form)
+    if not client_id or not client_secret:
+        return _oauth_error("invalid_client", "Client authentication is required", 401)
+
+    oauth_client = _load_oauth_client(client_id)
+    if not oauth_client or not verify_client_secret(client_secret, oauth_client.client_secret_hash):
+        return _oauth_error("invalid_client", "Client authentication failed", 401)
+    return oauth_client
+
+
+def _oauth_token_response(access_token: str, scopes: list[str]) -> JSONResponse:
     return JSONResponse(
         {
             "access_token": access_token,
             "token_type": "Bearer",
             "expires_in": DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS,
-            "scope": " ".join(authorization_code.scopes),
+            "scope": " ".join(scopes),
         },
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
@@ -236,7 +236,7 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
 
 def _load_oauth_client(client_id: str) -> _OAuthClientAuthResult | None:
     def _lookup(session):
-        oauth_client = OAuthClientRepository(session).get_active_client_by_client_id(client_id)
+        oauth_client = OAuthClientRepository(session).find_active_by_client_id_across_tenants(client_id)
         if not oauth_client:
             return None
         return _OAuthClientAuthResult(
@@ -251,9 +251,34 @@ def _load_oauth_client(client_id: str) -> _OAuthClientAuthResult | None:
     return execute_with_retry(_lookup)
 
 
-def _store_authorization_code(**kwargs) -> None:
+def _store_authorization_code(
+    *,
+    code_hash: str,
+    tenant_id: str,
+    client_id: str,
+    principal_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    code_challenge_method: str,
+    scopes: list[str],
+    resource: str,
+    expires_at: datetime,
+    created_at: datetime,
+) -> None:
     def _store(session):
-        OAuthClientRepository(session).create_authorization_code(**kwargs)
+        OAuthClientRepository(session).create_authorization_code(
+            code_hash=code_hash,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            principal_id=principal_id,
+            redirect_uri=redirect_uri,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            scopes=scopes,
+            resource=resource,
+            expires_at=expires_at,
+            created_at=created_at,
+        )
 
     execute_with_retry(_store)
 
@@ -284,11 +309,7 @@ def _load_authorization_code(code: str) -> _OAuthAuthorizationCodeResult | None:
 
 def _mark_authorization_code_used(code_hash: str) -> bool:
     def _mark_used(session):
-        authorization_code = OAuthClientRepository(session).get_authorization_code(code_hash)
-        if not authorization_code or authorization_code.used_at is not None:
-            return False
-        authorization_code.used_at = datetime.now(UTC)
-        return True
+        return OAuthClientRepository(session).consume_authorization_code(code_hash, now=datetime.now(UTC))
 
     return bool(execute_with_retry(_mark_used))
 

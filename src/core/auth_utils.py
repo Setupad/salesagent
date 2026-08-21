@@ -15,6 +15,7 @@ from src.core.credentials import hash_token
 from src.core.database.database_session import execute_with_retry
 from src.core.database.repositories.oauth_client import OAuthClientRepository
 from src.core.database.repositories.principal import PrincipalRepository
+from src.core.database.repositories.tenant import TenantRepository
 from src.core.oauth_service import (
     OAuthTokenValidationError,
     get_mcp_oauth_audience,
@@ -92,7 +93,8 @@ def _lookup_oauth_principal(session: Session, token: str, tenant_id: str) -> Pri
             issuer=get_mcp_oauth_issuer(),
             audience=get_mcp_oauth_audience(),
         )
-    except OAuthTokenValidationError:
+    except OAuthTokenValidationError as exc:
+        logger.debug("OAuth access token validation failed: %s", exc)
         return None
 
     if claims.tenant_id != tenant_id:
@@ -104,6 +106,9 @@ def _lookup_oauth_principal(session: Session, token: str, tenant_id: str) -> Pri
         principal_id=claims.principal_id,
     )
     if not oauth_client:
+        return None
+
+    if not TenantRepository(session).get_active(tenant_id):
         return None
 
     row = PrincipalRepository(session, tenant_id).get(claims.principal_id)

@@ -27,6 +27,7 @@ from src.core.database.repositories.push_notification_config import PushNotifica
 from src.core.database.repositories.replay_nonce import ReplayNonceRepository
 from src.core.database.repositories.signing_key import SigningKeyRepository
 from src.core.database.repositories.sync_job import SyncJobRepository
+from src.core.database.repositories.tenant import TenantRepository
 from src.core.database.repositories.tenant_config import TenantConfigRepository
 from src.core.database.repositories.tenant_lookup import TenantLookupRepository
 from src.core.database.repositories.uow import (
@@ -62,6 +63,7 @@ __all__ = [
     "SigningKeyRepository",
     "SigningKeyUoW",
     "SyncJobRepository",
+    "TenantRepository",
     "TenantConfigRepository",
     "TenantConfigUoW",
     "TenantLookupRepository",

@@ -1,8 +1,10 @@
 """Repository for first-party MCP OAuth clients."""
 
 from datetime import UTC, datetime
+from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from src.core.database.models import OAuthAuthorizationCode, OAuthClient
@@ -12,7 +14,7 @@ from src.core.oauth_service import DEFAULT_MCP_OAUTH_SCOPE, OAuthClientCredentia
 class OAuthClientRepository:
     """Data access for OAuth clients tied to advertiser principals."""
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session) -> None:
         self.session = session
 
     def get_active_client(
@@ -28,6 +30,9 @@ class OAuthClientRepository:
         return self.session.scalars(stmt).first()
 
     def get_active_client_by_client_id(self, client_id: str) -> OAuthClient | None:
+        return self.find_active_by_client_id_across_tenants(client_id)
+
+    def find_active_by_client_id_across_tenants(self, client_id: str) -> OAuthClient | None:
         stmt = select(OAuthClient).filter_by(client_id=client_id, is_active=True)
         return self.session.scalars(stmt).first()
 
@@ -95,3 +100,16 @@ class OAuthClientRepository:
     def get_authorization_code(self, code_hash: str) -> OAuthAuthorizationCode | None:
         stmt = select(OAuthAuthorizationCode).filter_by(code_hash=code_hash)
         return self.session.scalars(stmt).first()
+
+    def consume_authorization_code(self, code_hash: str, *, now: datetime) -> bool:
+        stmt = (
+            update(OAuthAuthorizationCode)
+            .where(
+                OAuthAuthorizationCode.code_hash == code_hash,
+                OAuthAuthorizationCode.used_at.is_(None),
+                OAuthAuthorizationCode.expires_at > now,
+            )
+            .values(used_at=now)
+        )
+        result = cast(CursorResult, self.session.execute(stmt))
+        return result.rowcount == 1
