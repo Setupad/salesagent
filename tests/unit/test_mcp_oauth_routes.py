@@ -1,11 +1,14 @@
 import base64
 import hashlib
+import os
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.core.oauth_service import DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS, validate_mcp_access_token
 from src.routes.oauth import _OAuthAuthorizationCodeResult, _OAuthClientAuthResult, router
 
 
@@ -51,21 +54,31 @@ def test_oauth_token_endpoint_issues_access_token_for_valid_client(monkeypatch):
         ),
     )
     monkeypatch.setattr("src.routes.oauth.verify_client_secret", lambda secret, stored_hash: secret == "secret")
-    monkeypatch.setattr("src.routes.oauth.issue_mcp_access_token", lambda **kwargs: "access-token")
 
-    response = _test_client().post(
-        "/oauth/token",
-        data={
-            "grant_type": "client_credentials",
-            "client_id": "mcp_client_abc",
-            "client_secret": "secret",
-            "resource": "https://agent.example.com/mcp",
-        },
-    )
+    with patch.dict(os.environ, {"MCP_OAUTH_JWT_SECRET": "test-signing-secret-with-at-least-32-bytes"}):
+        response = _test_client().post(
+            "/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": "mcp_client_abc",
+                "client_secret": "secret",
+                "resource": "https://agent.example.com/mcp",
+            },
+        )
 
     assert response.status_code == 200
-    assert response.json()["access_token"] == "access-token"
+    claims = validate_mcp_access_token(
+        response.json()["access_token"],
+        issuer="https://agent.example.com",
+        audience="https://agent.example.com/mcp",
+        signing_key="test-signing-secret-with-at-least-32-bytes",
+    )
+    assert claims.tenant_id == "tenant_123"
+    assert claims.principal_id == "principal_456"
+    assert claims.client_id == "mcp_client_abc"
+    assert claims.audience == "https://agent.example.com/mcp"
     assert response.json()["token_type"] == "Bearer"
+    assert response.json()["expires_in"] == DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS
     assert response.json()["scope"] == "mcp:principal"
     assert response.headers["Cache-Control"] == "no-store"
 

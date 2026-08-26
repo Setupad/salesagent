@@ -12,6 +12,10 @@ class TenantRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def get_by_id(self, tenant_id: str) -> Tenant | None:
+        stmt = select(Tenant).filter_by(tenant_id=tenant_id)
+        return self._session.scalars(stmt).first()
+
     def get_active(self, tenant_id: str) -> Tenant | None:
         stmt = select(Tenant).filter_by(tenant_id=tenant_id, is_active=True)
         return self._session.scalars(stmt).first()

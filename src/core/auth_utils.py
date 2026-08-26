@@ -35,10 +35,9 @@ def get_principal_from_token(token: str, tenant_id: str | None = None) -> tuple[
     """
 
     def _lookup_principal(session):
-        if _looks_like_oauth_access_token(token):
-            principal_id, token_tenant = _lookup_oauth_principal(session, token, tenant_id)
-            if principal_id:
-                return principal_id, token_tenant
+        principal_id, token_tenant = _lookup_oauth_principal(session, token, tenant_id)
+        if principal_id:
+            return principal_id, token_tenant
 
         if tenant_id:
             # If tenant_id specified, ONLY look in that tenant
@@ -94,10 +93,6 @@ def get_principal_from_token(token: str, tenant_id: str | None = None) -> tuple[
         return None, None
 
 
-def _looks_like_oauth_access_token(token: str) -> bool:
-    return token.count(".") == 2
-
-
 def _lookup_oauth_principal(session, token: str, tenant_id: str | None) -> tuple[str | None, dict | None]:
     try:
         claims = validate_mcp_access_token(
@@ -105,7 +100,7 @@ def _lookup_oauth_principal(session, token: str, tenant_id: str | None) -> tuple
             issuer=get_mcp_oauth_issuer(),
             audience=get_mcp_oauth_audience(),
         )
-    except OAuthTokenValidationError as exc:
+    except (OAuthTokenValidationError, RuntimeError) as exc:
         logger.debug("OAuth access token validation failed: %s", exc)
         return None, None
 

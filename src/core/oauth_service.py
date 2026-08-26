@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 import jwt
 
@@ -94,6 +95,25 @@ def verify_pkce_s256(code_verifier: str, code_challenge: str) -> bool:
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     actual = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return hmac.compare_digest(actual, code_challenge)
+
+
+def validate_oauth_redirect_uri(redirect_uri: str) -> str | None:
+    """Validate a registered OAuth redirect URI.
+
+    Registered redirect URIs must be absolute, fragment-free HTTPS URLs.
+    Loopback HTTP is allowed for local MCP clients using Authorization Code + PKCE.
+    """
+    parsed = urlsplit(redirect_uri)
+    if not parsed.scheme or not parsed.netloc:
+        return f"OAuth redirect URI must be absolute: {redirect_uri}"
+    if parsed.fragment:
+        return f"OAuth redirect URI must not include a fragment: {redirect_uri}"
+    hostname = parsed.hostname or ""
+    if parsed.scheme == "https":
+        return None
+    if parsed.scheme == "http" and hostname in {"localhost", "127.0.0.1"}:
+        return None
+    return f"OAuth redirect URI must use HTTPS unless it is localhost: {redirect_uri}"
 
 
 def hash_client_secret(client_secret: str) -> str:

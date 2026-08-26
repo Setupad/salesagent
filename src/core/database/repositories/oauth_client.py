@@ -8,7 +8,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from src.core.database.models import OAuthAuthorizationCode, OAuthClient
-from src.core.oauth_service import DEFAULT_MCP_OAUTH_SCOPE, OAuthClientCredentials
+from src.core.oauth_service import DEFAULT_MCP_OAUTH_SCOPE, OAuthClientCredentials, validate_oauth_redirect_uri
 
 
 class OAuthClientRepository:
@@ -51,19 +51,24 @@ class OAuthClientRepository:
         created_at: datetime | None = None,
     ) -> OAuthClient:
         timestamp = created_at or datetime.now(UTC)
+        validated_redirect_uris = _validated_redirect_uris(redirect_uris or [])
         oauth_client = OAuthClient(
             tenant_id=tenant_id,
             principal_id=principal_id,
             client_id=credentials.client_id,
             client_secret_hash=credentials.client_secret_hash,
             scopes=scopes or [DEFAULT_MCP_OAUTH_SCOPE],
-            redirect_uris=redirect_uris or [],
+            redirect_uris=validated_redirect_uris,
             is_active=True,
             created_at=timestamp,
             updated_at=timestamp,
         )
         self.session.add(oauth_client)
         return oauth_client
+
+    def update_redirect_uris(self, oauth_client: OAuthClient, redirect_uris: list[str]) -> None:
+        oauth_client.redirect_uris = _validated_redirect_uris(redirect_uris)
+        oauth_client.updated_at = datetime.now(UTC)
 
     def create_authorization_code(
         self,
@@ -81,19 +86,21 @@ class OAuthClientRepository:
         created_at: datetime | None = None,
     ) -> OAuthAuthorizationCode:
         timestamp = created_at or datetime.now(UTC)
-        authorization_code = OAuthAuthorizationCode(
-            code_hash=code_hash,
-            tenant_id=tenant_id,
-            client_id=client_id,
-            principal_id=principal_id,
-            redirect_uri=redirect_uri,
-            code_challenge=code_challenge,
-            code_challenge_method=code_challenge_method,
-            scopes=scopes,
-            resource=resource,
-            expires_at=expires_at,
-            created_at=timestamp,
-        )
+        authorization_code = OAuthAuthorizationCode()
+        for field_name, value in {
+            "code_hash": code_hash,
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "principal_id": principal_id,
+            "redirect_uri": redirect_uri,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
+            "scopes": scopes,
+            "resource": resource,
+            "expires_at": expires_at,
+            "created_at": timestamp,
+        }.items():
+            setattr(authorization_code, field_name, value)
         self.session.add(authorization_code)
         return authorization_code
 
@@ -113,3 +120,11 @@ class OAuthClientRepository:
         )
         result = cast(CursorResult, self.session.execute(stmt))
         return result.rowcount == 1
+
+
+def _validated_redirect_uris(redirect_uris: list[str]) -> list[str]:
+    for redirect_uri in redirect_uris:
+        validation_error = validate_oauth_redirect_uri(redirect_uri)
+        if validation_error:
+            raise ValueError(validation_error)
+    return redirect_uris

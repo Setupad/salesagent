@@ -13,6 +13,7 @@ from src.core.oauth_service import (
     hash_authorization_code,
     issue_mcp_access_token,
     validate_mcp_access_token,
+    validate_oauth_redirect_uri,
     verify_client_secret,
     verify_pkce_s256,
 )
@@ -93,6 +94,30 @@ def test_verify_pkce_s256_accepts_matching_verifier_and_rejects_wrong_value():
 
     assert verify_pkce_s256(verifier, challenge) is True
     assert verify_pkce_s256("wrong-verifier", challenge) is False
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "https://client.example.com/oauth/callback",
+        "http://localhost:3456/callback",
+        "http://127.0.0.1:3456/callback",
+    ],
+)
+def test_validate_oauth_redirect_uri_accepts_https_and_loopback_http(redirect_uri):
+    assert validate_oauth_redirect_uri(redirect_uri) is None
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    [
+        "client.example.com/oauth/callback",
+        "https://client.example.com/oauth/callback#fragment",
+        "http://client.example.com/oauth/callback",
+    ],
+)
+def test_validate_oauth_redirect_uri_rejects_unsafe_registrations(redirect_uri):
+    assert validate_oauth_redirect_uri(redirect_uri) is not None
 
 
 def test_validate_mcp_access_token_rejects_expired_token():

@@ -179,22 +179,16 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
     oauth_client = authenticated_client
 
     authorization_code = _load_authorization_code(str(form.get("code") or ""))
-    if not authorization_code or authorization_code.client_id != oauth_client.client_id:
-        return _oauth_error("invalid_grant", "Authorization code is invalid", 400)
-    if authorization_code.redirect_uri != str(form.get("redirect_uri") or ""):
-        return _oauth_error("invalid_grant", "Redirect URI does not match authorization request", 400)
-    if authorization_code.resource != resource:
-        return _oauth_error("invalid_target", "The requested resource is not this MCP server", 400)
-    if authorization_code.used_at is not None or _as_utc(authorization_code.expires_at) <= datetime.now(UTC):
-        return _oauth_error("invalid_grant", "Authorization code is expired or already used", 400)
-    if authorization_code.code_challenge_method != "S256":
-        return _oauth_error("invalid_grant", "Unsupported authorization code challenge method", 400)
-    try:
-        pkce_valid = verify_pkce_s256(str(form.get("code_verifier") or ""), authorization_code.code_challenge)
-    except UnicodeEncodeError:
-        pkce_valid = False
-    if not pkce_valid:
-        return _oauth_error("invalid_grant", "PKCE code verifier is invalid", 400)
+    grant_result = _validate_authorization_code_grant(
+        authorization_code,
+        oauth_client=oauth_client,
+        redirect_uri=str(form.get("redirect_uri") or ""),
+        resource=resource,
+        code_verifier=str(form.get("code_verifier") or ""),
+    )
+    if isinstance(grant_result, JSONResponse):
+        return grant_result
+    authorization_code = grant_result
 
     if not _mark_authorization_code_used(hash_authorization_code(str(form.get("code") or ""))):
         return _oauth_error("invalid_grant", "Authorization code is expired or already used", 400)
@@ -209,6 +203,36 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
     )
 
     return _oauth_token_response(access_token, authorization_code.scopes)
+
+
+def _validate_authorization_code_grant(
+    authorization_code: _OAuthAuthorizationCodeResult | None,
+    *,
+    oauth_client: _OAuthClientAuthResult,
+    redirect_uri: str,
+    resource: str,
+    code_verifier: str,
+) -> _OAuthAuthorizationCodeResult | JSONResponse:
+    if not authorization_code or authorization_code.client_id != oauth_client.client_id:
+        return _oauth_error("invalid_grant", "Authorization code is invalid", 400)
+    if authorization_code.redirect_uri != redirect_uri:
+        return _oauth_error("invalid_grant", "Redirect URI does not match authorization request", 400)
+    if authorization_code.resource != resource:
+        return _oauth_error("invalid_target", "The requested resource is not this MCP server", 400)
+    if authorization_code.used_at is not None or _as_utc(authorization_code.expires_at) <= datetime.now(UTC):
+        return _oauth_error("invalid_grant", "Authorization code is expired or already used", 400)
+    if authorization_code.code_challenge_method != "S256":
+        return _oauth_error("invalid_grant", "Unsupported authorization code challenge method", 400)
+    if not _verify_authorization_code_pkce(code_verifier, authorization_code.code_challenge):
+        return _oauth_error("invalid_grant", "PKCE code verifier is invalid", 400)
+    return authorization_code
+
+
+def _verify_authorization_code_pkce(code_verifier: str, code_challenge: str) -> bool:
+    try:
+        return verify_pkce_s256(code_verifier, code_challenge)
+    except UnicodeEncodeError:
+        return False
 
 
 def _authenticate_confidential_client(request: Request, form) -> _OAuthClientAuthResult | JSONResponse:
