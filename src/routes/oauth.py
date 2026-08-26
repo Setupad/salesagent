@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from mcp.shared.auth import OAuthMetadata, ProtectedResourceMetadata
 
 from src.core.database.database_session import execute_with_retry
 from src.core.database.repositories.oauth_client import OAuthClientRepository
@@ -52,22 +53,36 @@ class _OAuthAuthorizationCodeResult:
     used_at: datetime | None
 
 
-@router.get("/.well-known/oauth-protected-resource")
-@router.get("/.well-known/oauth-protected-resource/mcp")
-async def oauth_protected_resource_metadata() -> dict:
+@router.get(
+    "/.well-known/oauth-protected-resource",
+    response_model=ProtectedResourceMetadata,
+    response_model_exclude_none=True,
+)
+@router.get(
+    "/.well-known/oauth-protected-resource/mcp",
+    response_model=ProtectedResourceMetadata,
+    response_model_exclude_none=True,
+)
+async def oauth_protected_resource_metadata() -> JSONResponse:
     issuer = get_mcp_oauth_issuer()
-    return {
+    payload = {
         "resource": get_mcp_oauth_audience(),
         "authorization_servers": [issuer],
         "bearer_methods_supported": ["header"],
         "scopes_supported": [DEFAULT_MCP_OAUTH_SCOPE],
     }
+    ProtectedResourceMetadata.model_validate(payload)
+    return JSONResponse(payload)
 
 
-@router.get("/.well-known/oauth-authorization-server")
-async def oauth_authorization_server_metadata() -> dict:
+@router.get(
+    "/.well-known/oauth-authorization-server",
+    response_model=OAuthMetadata,
+    response_model_exclude_none=True,
+)
+async def oauth_authorization_server_metadata() -> JSONResponse:
     issuer = get_mcp_oauth_issuer()
-    return {
+    payload = {
         "issuer": issuer,
         "authorization_endpoint": f"{issuer}/authorize",
         "token_endpoint": f"{issuer}/oauth/token",
@@ -77,10 +92,26 @@ async def oauth_authorization_server_metadata() -> dict:
         "code_challenge_methods_supported": ["S256"],
         "scopes_supported": [DEFAULT_MCP_OAUTH_SCOPE],
     }
+    OAuthMetadata.model_validate(payload)
+    return JSONResponse(payload)
 
 
 @router.get("/authorize", response_model=None)
 async def oauth_authorize(request: Request) -> JSONResponse | RedirectResponse:
+    """Issue an authorization code for a provisioned MCP OAuth client.
+
+    PSA provisions OAuth clients out-of-band for a specific buyer/operator principal.
+    For this flow, that provisioned principal is treated as the resource owner.
+    The `/authorize` endpoint does not perform an interactive end-user login or
+    consent step.
+
+    Authorization Code + PKCE is supported for MCP host compatibility, while
+    client credentials remain available for direct machine-to-machine use.
+
+    AdCP reference (pinned by this project to adcp==6.6.0 / AdCP 3.1.1):
+    adcp/_schemas/3.1/bundled/protocol/get-adcp-capabilities-response.json
+    (`account.require_operator_auth` and `account.authorization_endpoint`).
+    """
     params = request.query_params
     if str(params.get("response_type") or "") != "code":
         return _oauth_error("unsupported_response_type", "Only response_type=code is supported", 400)

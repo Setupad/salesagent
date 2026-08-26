@@ -107,7 +107,7 @@ def _lookup_oauth_principal(session, token: str, tenant_id: str | None) -> tuple
     if tenant_id and claims.tenant_id != tenant_id:
         return None, None
 
-    oauth_client = OAuthClientRepository(session).get_active_client(
+    oauth_client = OAuthClientRepository(session).get_active(
         tenant_id=claims.tenant_id,
         client_id=claims.client_id,
         principal_id=claims.principal_id,

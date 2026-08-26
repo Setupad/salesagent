@@ -15,7 +15,21 @@ class OAuthClientRepository:
     """Data access for OAuth clients tied to advertiser principals."""
 
     def __init__(self, session: Session) -> None:
-        self.session = session
+        self._session = session
+
+    def get_active(
+        self,
+        *,
+        tenant_id: str,
+        client_id: str | None = None,
+        principal_id: str | None = None,
+    ) -> OAuthClient | None:
+        stmt = select(OAuthClient).filter_by(tenant_id=tenant_id, is_active=True)
+        if client_id is not None:
+            stmt = stmt.filter_by(client_id=client_id)
+        if principal_id is not None:
+            stmt = stmt.filter_by(principal_id=principal_id)
+        return self._session.scalars(stmt).first()
 
     def get_active_client(
         self,
@@ -24,21 +38,17 @@ class OAuthClientRepository:
         client_id: str,
         principal_id: str | None = None,
     ) -> OAuthClient | None:
-        stmt = select(OAuthClient).filter_by(tenant_id=tenant_id, client_id=client_id, is_active=True)
-        if principal_id is not None:
-            stmt = stmt.filter_by(principal_id=principal_id)
-        return self.session.scalars(stmt).first()
+        return self.get_active(tenant_id=tenant_id, client_id=client_id, principal_id=principal_id)
 
     def get_active_client_by_client_id(self, client_id: str) -> OAuthClient | None:
         return self.find_active_by_client_id_across_tenants(client_id)
 
     def find_active_by_client_id_across_tenants(self, client_id: str) -> OAuthClient | None:
         stmt = select(OAuthClient).filter_by(client_id=client_id, is_active=True)
-        return self.session.scalars(stmt).first()
+        return self._session.scalars(stmt).first()
 
     def get_active_client_by_principal(self, *, tenant_id: str, principal_id: str) -> OAuthClient | None:
-        stmt = select(OAuthClient).filter_by(tenant_id=tenant_id, principal_id=principal_id, is_active=True)
-        return self.session.scalars(stmt).first()
+        return self.get_active(tenant_id=tenant_id, principal_id=principal_id)
 
     def create_for_principal(
         self,
@@ -63,7 +73,7 @@ class OAuthClientRepository:
             created_at=timestamp,
             updated_at=timestamp,
         )
-        self.session.add(oauth_client)
+        self._session.add(oauth_client)
         return oauth_client
 
     def update_redirect_uris(self, oauth_client: OAuthClient, redirect_uris: list[str]) -> None:
@@ -101,12 +111,12 @@ class OAuthClientRepository:
             "created_at": timestamp,
         }.items():
             setattr(authorization_code, field_name, value)
-        self.session.add(authorization_code)
+        self._session.add(authorization_code)
         return authorization_code
 
     def get_authorization_code(self, code_hash: str) -> OAuthAuthorizationCode | None:
         stmt = select(OAuthAuthorizationCode).filter_by(code_hash=code_hash)
-        return self.session.scalars(stmt).first()
+        return self._session.scalars(stmt).first()
 
     def consume_authorization_code(self, code_hash: str, *, now: datetime) -> bool:
         stmt = (
@@ -118,7 +128,7 @@ class OAuthClientRepository:
             )
             .values(used_at=now)
         )
-        result = cast(CursorResult, self.session.execute(stmt))
+        result = cast(CursorResult, self._session.execute(stmt))
         return result.rowcount == 1
 
 

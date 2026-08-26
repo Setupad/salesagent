@@ -91,14 +91,6 @@ def _headers(scope: Scope) -> dict[str, str]:
     return {name.decode("latin-1").lower(): value.decode("latin-1") for name, value in scope.get("headers", [])}
 
 
-def _has_auth_header(scope: Scope) -> bool:
-    headers = _headers(scope)
-    if headers.get("x-adcp-auth"):
-        return True
-    authorization = headers.get("authorization") or ""
-    return authorization.lower().startswith("bearer ") and bool(authorization[7:].strip())
-
-
 def _extract_tool_name(body: bytes) -> str | None:
     try:
         payload: Any = json.loads(body.decode("utf-8"))

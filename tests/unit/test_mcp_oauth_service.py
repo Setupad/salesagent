@@ -10,6 +10,8 @@ import pytest
 from src.core.oauth_service import (
     OAuthTokenValidationError,
     generate_oauth_client_credentials,
+    get_mcp_oauth_audience,
+    get_mcp_oauth_issuer,
     hash_authorization_code,
     issue_mcp_access_token,
     validate_mcp_access_token,
@@ -27,6 +29,12 @@ def test_generate_oauth_client_credentials_returns_one_time_secret_and_hash():
     assert credentials.client_secret_hash != credentials.client_secret
     assert verify_client_secret(credentials.client_secret, credentials.client_secret_hash)
     assert not verify_client_secret("mcp_secret_wrong", credentials.client_secret_hash)
+
+
+def test_mcp_oauth_public_urls_use_http_for_loopback_domains():
+    with patch.dict(os.environ, {"SALES_AGENT_DOMAIN": "[::1]:8080"}, clear=False):
+        assert get_mcp_oauth_issuer() == "http://[::1]:8080"
+        assert get_mcp_oauth_audience() == "http://[::1]:8080/mcp"
 
 
 def test_issue_and_validate_mcp_access_token_returns_principal_claims():

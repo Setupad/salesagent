@@ -15,7 +15,12 @@ from urllib.parse import urlsplit
 
 import jwt
 
-from src.core.domain_config import get_mcp_server_url, get_sales_agent_domain, get_sales_agent_url
+from src.core.domain_config import (
+    get_mcp_server_url,
+    get_protocol_for_domain,
+    get_sales_agent_domain,
+    get_sales_agent_url,
+)
 
 DEFAULT_MCP_OAUTH_SCOPE = "mcp:principal"
 DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600
@@ -258,7 +263,4 @@ def _get_signing_key() -> str:
 
 
 def _get_public_protocol() -> str:
-    domain = get_sales_agent_domain()
-    if domain and domain.split(":", 1)[0] in {"localhost", "127.0.0.1"}:
-        return "http"
-    return "https"
+    return get_protocol_for_domain(get_sales_agent_domain())

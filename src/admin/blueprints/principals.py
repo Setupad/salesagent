@@ -315,13 +315,11 @@ def _render_edit_principal_form(tenant_id: str, principal_id: str):
             return redirect(url_for("tenants.dashboard", tenant_id=tenant_id))
 
         oauth_client_repo = OAuthClientRepository(db_session)
-        oauth_client = oauth_client_repo.get_active_client(
-            tenant_id=tenant_id,
-            principal_id=principal_id,
-            client_id=request.args.get("oauth_client_id", ""),
-        ) or oauth_client_repo.get_active_client_by_principal(
-            tenant_id=tenant_id,
-            principal_id=principal_id,
+        oauth_client_id = request.args.get("oauth_client_id")
+        oauth_client = (
+            oauth_client_repo.get_active(tenant_id=tenant_id, principal_id=principal_id, client_id=oauth_client_id)
+            if oauth_client_id
+            else oauth_client_repo.get_active(tenant_id=tenant_id, principal_id=principal_id)
         )
 
         return render_template(
@@ -368,7 +366,7 @@ def _update_oauth_redirect_uris_from_form(db_session, tenant_id: str, principal_
         return redirect(url_for("principals.edit_principal", tenant_id=tenant_id, principal_id=principal_id))
 
     oauth_client_repo = OAuthClientRepository(db_session)
-    oauth_client = oauth_client_repo.get_active_client_by_principal(
+    oauth_client = oauth_client_repo.get_active(
         tenant_id=tenant_id,
         principal_id=principal_id,
     )
