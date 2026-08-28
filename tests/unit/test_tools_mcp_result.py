@@ -8,6 +8,7 @@ field as wire null instead of omitting it.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from adcp.types.base import AdCPBaseModel
@@ -37,12 +38,12 @@ def test_datetime_serializes_to_iso_string():
     assert result.structured_content["timestamp"] == "2026-01-01T00:00:00Z"
 
 
-def test_content_defaults_to_str_of_response():
+def test_content_defaults_to_serialized_structured_content():
     response = _SampleResponse(required_field="ok", timestamp=datetime(2026, 1, 1, tzinfo=UTC))
 
     result = mcp_result(response)
 
-    assert result.content[0].text == str(response)
+    assert json.loads(result.content[0].text) == result.structured_content
 
 
 def test_content_override_used_verbatim():

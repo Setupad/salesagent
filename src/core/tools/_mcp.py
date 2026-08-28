@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from adcp.types.base import AdCPBaseModel
 from fastmcp.tools.tool import ToolResult
 
@@ -23,7 +25,9 @@ def mcp_result(response: AdCPBaseModel, content: str | None = None) -> ToolResul
     type-check, re-leak the nulls, and still satisfy every "did it go through
     mcp_result?" structural check -- so the bound is where it has to be caught.
     """
+    structured_content = response.model_dump(mode="json")
+
     return ToolResult(
-        content=content if content is not None else str(response),
-        structured_content=response.model_dump(mode="json"),
+        content=content if content is not None else json.dumps(structured_content, separators=(",", ":")),
+        structured_content=structured_content,
     )
