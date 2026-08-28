@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from adcp.types import ProtocolEnvelope
 from fastmcp.tools.tool import ToolResult
 
@@ -26,7 +28,9 @@ def mcp_result(response: ProtocolEnvelope, content: str | None = None) -> ToolRe
     nulls, have no ``message``, and still satisfy every "did it go through mcp_result?"
     structural check -- so the bound is where it has to be caught.
     """
+    structured_content = to_wire(response)
+
     return ToolResult(
-        content=content if content is not None else (getattr(response, "message", None) or ""),
-        structured_content=to_wire(response),
+        content=content if content is not None else json.dumps(structured_content, separators=(",", ":")),
+        structured_content=structured_content,
     )
