@@ -16,7 +16,6 @@ import jwt
 
 from src.core.domain_config import get_mcp_server_url, get_sales_agent_domain, get_sales_agent_url
 
-
 DEFAULT_MCP_OAUTH_SCOPE = "mcp:principal"
 DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600
 DEFAULT_AUTHORIZATION_CODE_LIFETIME_SECONDS = 300

@@ -13,8 +13,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from src.core.database.database_session import execute_with_retry
 from src.core.database.repositories.oauth_client import OAuthClientRepository
 from src.core.oauth_service import (
-    DEFAULT_AUTHORIZATION_CODE_LIFETIME_SECONDS,
     DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS,
+    DEFAULT_AUTHORIZATION_CODE_LIFETIME_SECONDS,
     DEFAULT_MCP_OAUTH_SCOPE,
     generate_authorization_code,
     get_mcp_oauth_audience,
