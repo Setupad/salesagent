@@ -44,7 +44,7 @@ class GAMProductConfigService:
             base_config.update(
                 {
                     "line_item_type": "PRICE_PRIORITY",
-                    "priority": 10,
+                    "priority": 12,
                     "primary_goal_type": "NONE",
                     "delivery_rate_type": "AS_FAST_AS_POSSIBLE",
                     "creative_rotation_type": "OPTIMIZED",

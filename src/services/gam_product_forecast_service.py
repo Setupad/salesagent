@@ -5,16 +5,8 @@ from adcp.types import DeliveryForecast
 
 DEFAULT_FORECAST_DURATION_DAYS = 30
 DEFAULT_FORECAST_TTL_HOURS = 6
-DEFAULT_PRIORITY_BY_LINE_ITEM_TYPE = {
-    "SPONSORSHIP": 4,
-    "STANDARD": 8,
-    "NETWORK": 12,
-    "BULK": 12,
-    "PRICE_PRIORITY": 12,
-    "AD_EXCHANGE": 12,
-    "HOUSE": 16,
-    "CLICK_TRACKING": 16,
-}
+FORECAST_LINE_ITEM_TYPE = "STANDARD"
+FORECAST_LINE_ITEM_PRIORITY = 8
 
 
 def fetch_product_availability_forecast(
@@ -73,14 +65,13 @@ def build_forecast_line_item(
     config = product.effective_implementation_config
     end_time = start_time + timedelta(days=duration_days)
     targeting = _build_inventory_targeting(config)
-    line_item_type = config.get("line_item_type", "STANDARD")
     return {
-        "name": f"Forecast - {product.name}",
+        "name": f"{duration_days}d Availability Forecast - {product.name}",
         "targeting": targeting,
         "creativePlaceholders": _build_creative_placeholders(config),
-        "lineItemType": line_item_type,
-        "priority": DEFAULT_PRIORITY_BY_LINE_ITEM_TYPE.get(line_item_type, 8),
-        "costType": config.get("cost_type", "CPM"),
+        "lineItemType": FORECAST_LINE_ITEM_TYPE,
+        "priority": FORECAST_LINE_ITEM_PRIORITY,
+        "costType": "CPM",
         "costPerUnit": {"currencyCode": currency, "microAmount": 0},
         "primaryGoal": {
             "goalType": "LIFETIME",
