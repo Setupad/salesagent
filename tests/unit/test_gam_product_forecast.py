@@ -32,6 +32,10 @@ class FakeGAMClientManager:
 class FakeProduct:
     product_id = "prod_video_1"
     name = "Video product"
+    line_item_type = "STANDARD"
+    priority = 10
+    primary_goal_type = "DAILY"
+    cost_type = "CPM"
 
     @property
     def effective_implementation_config(self) -> dict:
@@ -40,10 +44,18 @@ class FakeProduct:
             "targeted_placement_ids": ["456"],
             "include_descendants": False,
             "creative_placeholders": [{"width": 640, "height": 480, "expected_creative_count": 2}],
-            "line_item_type": "STANDARD",
-            "priority": 10,
-            "primary_goal_type": "DAILY",
+            "line_item_type": self.line_item_type,
+            "priority": self.priority,
+            "primary_goal_type": self.primary_goal_type,
+            "cost_type": self.cost_type,
         }
+
+
+class FakePricePriorityProduct(FakeProduct):
+    line_item_type = "PRICE_PRIORITY"
+    priority = 10
+    primary_goal_type = "NONE"
+    cost_type = "CPC"
 
 
 class FakeProductRepository:
@@ -124,6 +136,8 @@ def test_fetch_product_availability_forecast_calls_gam_forecast_service() -> Non
 
     assert forecast["points"][0]["metrics"]["impressions"]["mid"] == 120_000.0
     assert service.options == {"includeTargetingCriteriaBreakdown": False, "includeContendingLineItems": False}
+    assert service.line_item["lineItem"]["name"] == "30d Availability Forecast - Video product"
+    assert service.line_item["lineItem"]["lineItemType"] == "STANDARD"
     assert service.line_item["lineItem"]["targeting"]["inventoryTargeting"] == {
         "targetedAdUnits": [{"adUnitId": "123", "includeDescendants": False}],
         "targetedPlacements": [{"placementId": "456"}],
@@ -135,6 +149,7 @@ def test_fetch_product_availability_forecast_calls_gam_forecast_service() -> Non
         }
     ]
     assert service.line_item["lineItem"]["costPerUnit"] == {"currencyCode": "USD", "microAmount": 0}
+    assert service.line_item["lineItem"]["costType"] == "CPM"
     assert service.line_item["lineItem"]["priority"] == 8
     assert service.line_item["lineItem"]["primaryGoal"] == {
         "goalType": "LIFETIME",
@@ -144,6 +159,26 @@ def test_fetch_product_availability_forecast_calls_gam_forecast_service() -> Non
     assert service.line_item["lineItem"]["startDateTime"]["date"] == {"year": 2026, "month": 1, "day": 1}
     assert service.line_item["lineItem"]["endDateTime"]["date"] == {"year": 2026, "month": 1, "day": 31}
     DeliveryForecast.model_validate(forecast)
+
+
+def test_product_availability_forecast_uses_standard_line_item_for_price_priority_product() -> None:
+    service = FakeForecastService()
+
+    fetch_product_availability_forecast(
+        FakeGAMClientManager(service),
+        FakePricePriorityProduct(),
+        currency="USD",
+        now=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+
+    assert service.line_item["lineItem"]["lineItemType"] == "STANDARD"
+    assert service.line_item["lineItem"]["priority"] == 8
+    assert service.line_item["lineItem"]["costType"] == "CPM"
+    assert service.line_item["lineItem"]["primaryGoal"] == {
+        "goalType": "LIFETIME",
+        "unitType": "IMPRESSIONS",
+        "units": 1,
+    }
 
 
 def test_refresh_cached_product_forecast_persists_forecast_field() -> None:

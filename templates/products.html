@@ -145,7 +145,7 @@
                 <th>Type</th>
                 <th>Pricing</th>
                 <th>Inventory Profile</th>
-                <th>Forecast</th>
+                <th>30d Forecast</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -288,7 +288,7 @@
                     {% if forecast.impressions is not none %}
                         <br>
                         <span style="font-weight: 600;">{{ "{:,.0f}".format(forecast.impressions) }}</span>
-                        <small style="color: #666;"> impressions</small>
+                        <small style="color: #666;"> impressions / 30d</small>
                     {% endif %}
                     <br>
                     <button onclick="refreshForecast('{{ product.product_id }}')" class="btn btn-secondary btn-sm forecast-refresh-btn" data-product-id="{{ product.product_id }}" style="margin-top: 0.35rem;">Refresh</button>
