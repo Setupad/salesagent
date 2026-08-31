@@ -145,6 +145,7 @@
                 <th>Type</th>
                 <th>Pricing</th>
                 <th>Inventory Profile</th>
+                <th>Forecast</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -270,6 +271,27 @@
                         {# Custom inventory configuration #}
                         <span style="color: #666;">Custom</span>
                     {% endif %}
+                </td>
+                <td>
+                    {% set forecast = product.forecast_status %}
+                    {% if forecast.state == 'ready' %}
+                        <span class="badge" style="background: #28a745; color: white;">Ready</span>
+                    {% elif forecast.state == 'running' %}
+                        <span class="badge" style="background: #17a2b8; color: white;">Refreshing</span>
+                    {% elif forecast.state == 'stale' %}
+                        <span class="badge" style="background: #ffc107; color: #333;">Stale</span>
+                    {% elif forecast.state == 'failed' %}
+                        <span class="badge" style="background: #dc3545; color: white;" title="{{ forecast.last_error }}">Failed</span>
+                    {% else %}
+                        <span class="badge badge-secondary">Pending</span>
+                    {% endif %}
+                    {% if forecast.impressions is not none %}
+                        <br>
+                        <span style="font-weight: 600;">{{ "{:,.0f}".format(forecast.impressions) }}</span>
+                        <small style="color: #666;"> impressions</small>
+                    {% endif %}
+                    <br>
+                    <button onclick="refreshForecast('{{ product.product_id }}')" class="btn btn-secondary btn-sm forecast-refresh-btn" data-product-id="{{ product.product_id }}" style="margin-top: 0.35rem;">Refresh</button>
                 </td>
                 <td>
                     <div style="display: flex; gap: 0.5rem;">
@@ -487,6 +509,40 @@ function deleteProduct(productId, productName) {
             }
         });
     }
+}
+
+function refreshForecast(productId) {
+    const button = document.querySelector(`.forecast-refresh-btn[data-product-id="${CSS.escape(productId)}"]`);
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Refreshing...';
+    }
+
+    fetch(`{{ script_name }}/tenant/{{ tenant_id }}/products/${encodeURIComponent(productId)}/forecast/refresh`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    })
+    .then(response => {
+        if (response.ok) {
+            window.location.reload();
+        } else {
+            return response.json().then(err => {
+                alert(err.error || 'Could not start forecast refresh');
+                return Promise.reject(err);
+            });
+        }
+    })
+    .catch(error => {
+        if (button) {
+            button.disabled = false;
+            button.textContent = 'Refresh';
+        }
+        if (error.message) {
+            alert('Failed to refresh forecast: ' + error.message);
+        }
+    });
 }
 
 function getCsrfToken() {
