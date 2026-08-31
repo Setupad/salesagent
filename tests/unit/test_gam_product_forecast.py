@@ -123,19 +123,19 @@ def test_fetch_product_availability_forecast_calls_gam_forecast_service() -> Non
 
     assert forecast["points"][0]["metrics"]["impressions"]["mid"] == 120_000.0
     assert service.options == {"includeTargetingCriteriaBreakdown": False, "includeContendingLineItems": False}
-    assert service.line_item["targeting"]["inventoryTargeting"] == {
+    assert service.line_item["lineItem"]["targeting"]["inventoryTargeting"] == {
         "targetedAdUnits": [{"adUnitId": "123", "includeDescendants": False}],
         "targetedPlacements": [{"placementId": "456"}],
     }
-    assert service.line_item["creativePlaceholders"] == [
+    assert service.line_item["lineItem"]["creativePlaceholders"] == [
         {
             "size": {"width": 640, "height": 480, "isAspectRatio": False},
             "expectedCreativeCount": 2,
         }
     ]
-    assert service.line_item["costPerUnit"] == {"currencyCode": "USD", "microAmount": 0}
-    assert service.line_item["startDateTime"]["date"] == {"year": 2026, "month": 1, "day": 1}
-    assert service.line_item["endDateTime"]["date"] == {"year": 2026, "month": 1, "day": 31}
+    assert service.line_item["lineItem"]["costPerUnit"] == {"currencyCode": "USD", "microAmount": 0}
+    assert service.line_item["lineItem"]["startDateTime"]["date"] == {"year": 2026, "month": 1, "day": 1}
+    assert service.line_item["lineItem"]["endDateTime"]["date"] == {"year": 2026, "month": 1, "day": 31}
     DeliveryForecast.model_validate(forecast)
 
 
