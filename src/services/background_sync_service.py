@@ -7,6 +7,7 @@ and losing progress on container restarts.
 
 import logging
 import threading
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -132,6 +133,96 @@ def start_inventory_sync_background(
     logger.info(f"Started background sync thread: {sync_id}")
 
     return sync_id
+
+
+def start_product_forecast_refresh_background(tenant_id: str, product_id: str, triggered_by_id: str = "system") -> str:
+    """Refresh one product's cached GAM availability forecast in the background."""
+    with get_db_session() as db:
+        from src.core.database.models import CurrencyLimit
+        from src.core.database.repositories.adapter_config import AdapterConfigRepository
+        from src.core.database.repositories.sync_job import SyncJobRepository
+
+        adapter_repo = AdapterConfigRepository(db, tenant_id)
+        adapter_config = adapter_repo.find_by_tenant()
+        if (
+            not adapter_config
+            or adapter_config.adapter_type != "google_ad_manager"
+            or not adapter_config.gam_network_code
+            or not adapter_repo.has_gam_credentials(adapter_config)
+        ):
+            raise ValueError("GAM is not configured for this tenant")
+
+        existing_sync = SyncJobRepository(db, tenant_id).get_running_by_type("forecast")
+        if existing_sync:
+            raise ValueError(f"Forecast refresh already running for tenant {tenant_id}: {existing_sync.sync_id}")
+
+        currency = db.scalars(select(CurrencyLimit.currency_code).filter_by(tenant_id=tenant_id)).first() or "USD"
+        sync_id = f"forecast_{int(datetime.now(UTC).timestamp())}_{uuid.uuid4().hex[:8]}"
+        sync_job = SyncJob(
+            sync_id=sync_id,
+            tenant_id=tenant_id,
+            adapter_type="google_ad_manager",
+            sync_type="forecast",
+            status="running",
+            started_at=datetime.now(UTC),
+            triggered_by="admin_ui",
+            triggered_by_id=triggered_by_id,
+            progress={"phase": "Starting", "product_id": product_id},
+        )
+        db.add(sync_job)
+        db.commit()
+
+    thread = threading.Thread(
+        target=_run_product_forecast_refresh_thread,
+        args=(tenant_id, product_id, sync_id, currency),
+        daemon=True,
+        name=f"forecast-{sync_id}",
+    )
+    _active_syncs.add(sync_id, thread)
+    thread.start()
+    logger.info(f"Started product forecast refresh thread: {sync_id}")
+    return sync_id
+
+
+def _run_product_forecast_refresh_thread(tenant_id: str, product_id: str, sync_id: str, currency: str) -> None:
+    try:
+        from src.adapters.gam.client import GAMClientManager
+        from src.core.database.repositories.adapter_config import AdapterConfigRepository
+        from src.services.gam_product_forecast_service import refresh_cached_product_forecast
+
+        _update_sync_progress(sync_id, {"phase": "Connecting to GAM", "product_id": product_id})
+        with get_db_session() as db:
+            adapter_repo = AdapterConfigRepository(db, tenant_id)
+            adapter_config = adapter_repo.get_by_tenant()
+            gam_config = adapter_repo.get_gam_config(adapter_config)
+            network_code = adapter_config.gam_network_code
+
+        if not network_code:
+            raise ValueError("GAM network code is missing")
+
+        _update_sync_progress(sync_id, {"phase": "Refreshing Forecast", "product_id": product_id})
+        gam_client_manager = GAMClientManager(gam_config, network_code)
+        forecast = refresh_cached_product_forecast(
+            gam_client_manager,
+            tenant_id=tenant_id,
+            product_id=product_id,
+            currency=currency,
+        )
+        impressions = forecast["points"][0]["metrics"]["impressions"]
+        _mark_sync_complete(
+            sync_id,
+            {
+                "product_id": product_id,
+                "currency": currency,
+                "impressions": impressions,
+                "valid_until": forecast.get("valid_until"),
+            },
+        )
+    except Exception as exc:
+        logger.exception("Product forecast refresh failed for %s/%s", tenant_id, product_id)
+        _mark_sync_failed(sync_id, str(exc))
+    finally:
+        _active_syncs.remove(sync_id)
 
 
 def _run_sync_thread(

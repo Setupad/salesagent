@@ -23,6 +23,7 @@ from src.core.database.repositories.idempotency_attempt import IdempotencyAttemp
 from src.core.database.repositories.media_buy import MediaBuyRepository
 from src.core.database.repositories.product import ProductRepository
 from src.core.database.repositories.push_notification_config import PushNotificationConfigRepository
+from src.core.database.repositories.sync_job import SyncJobRepository
 from src.core.database.repositories.tenant_config import TenantConfigRepository
 from src.core.database.repositories.uow import (
     AccountUoW,
@@ -48,6 +49,7 @@ __all__ = [
     "ProductUoW",
     "PushNotificationConfigRepository",
     "PushNotificationConfigUoW",
+    "SyncJobRepository",
     "TenantConfigRepository",
     "TenantConfigUoW",
     "WorkflowRepository",
