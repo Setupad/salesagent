@@ -114,14 +114,16 @@ COPY config/nginx/nginx-multi-tenant.conf /etc/nginx/nginx-multi-tenant.conf
 COPY config/nginx/nginx-development.conf /etc/nginx/nginx-development.conf
 
 # Non-root runtime user (D34 — issue #1234 PR 5)
-RUN groupadd -r -g 1001 app && useradd -r -u 1001 -g app -s /usr/sbin/nologin app && \
-    mkdir -p /var/log/nginx /var/run && \
-    chown -R app:app /app /opt/venv /var/log/nginx /var/run
+RUN groupadd -r -g 1001 app && useradd -r -u 1001 -g app -d /home/app -s /usr/sbin/nologin app && \
+    mkdir -p /home/app/.cache /var/log/nginx /var/run && \
+    chown -R app:app /home/app /app /opt/venv /var/log/nginx /var/run
 
 # Venv on PATH; PYTHONPATH points at bind-mounted source in dev compose
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV PYTHONUNBUFFERED=1
+ENV HOME=/home/app
+ENV XDG_CACHE_HOME=/home/app/.cache
 
 # Default port
 ENV ADCP_PORT=8080
