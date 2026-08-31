@@ -41,7 +41,8 @@ class FakeProduct:
             "include_descendants": False,
             "creative_placeholders": [{"width": 640, "height": 480, "expected_creative_count": 2}],
             "line_item_type": "STANDARD",
-            "priority": 6,
+            "priority": 10,
+            "primary_goal_type": "DAILY",
         }
 
 
@@ -134,6 +135,12 @@ def test_fetch_product_availability_forecast_calls_gam_forecast_service() -> Non
         }
     ]
     assert service.line_item["lineItem"]["costPerUnit"] == {"currencyCode": "USD", "microAmount": 0}
+    assert service.line_item["lineItem"]["priority"] == 8
+    assert service.line_item["lineItem"]["primaryGoal"] == {
+        "goalType": "LIFETIME",
+        "unitType": "IMPRESSIONS",
+        "units": 1,
+    }
     assert service.line_item["lineItem"]["startDateTime"]["date"] == {"year": 2026, "month": 1, "day": 1}
     assert service.line_item["lineItem"]["endDateTime"]["date"] == {"year": 2026, "month": 1, "day": 31}
     DeliveryForecast.model_validate(forecast)
