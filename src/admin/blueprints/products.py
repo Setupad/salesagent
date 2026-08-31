@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from adcp.exceptions import ADCPConnectionError, ADCPError, ADCPTimeoutError
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
@@ -14,17 +15,83 @@ from sqlalchemy.orm import joinedload
 from src.admin.utils import require_tenant_access
 from src.admin.utils.audit_decorator import log_admin_action
 from src.core.database.database_session import get_db_session
-from src.core.database.models import PersistedMediaBuyStatus, PricingOption, Product, ProductInventoryMapping, Tenant
+from src.core.database.models import (
+    PersistedMediaBuyStatus,
+    PricingOption,
+    Product,
+    ProductInventoryMapping,
+    SyncJob,
+    Tenant,
+)
 from src.core.database.product_pricing import get_product_pricing_options
 from src.core.database.repositories.media_buy import MediaBuyRepository
+from src.core.database.repositories.product import ProductRepository
 from src.core.schemas import Format
 from src.core.validation import sanitize_form_data
+from src.services.background_sync_service import start_product_forecast_refresh_background
 from src.services.gam_product_config_service import GAMProductConfigService
 
 logger = logging.getLogger(__name__)
 
 # Create Blueprint
 products_bp = Blueprint("products", __name__)
+
+
+def _start_product_forecast_refresh_or_warn(tenant_id: str, product_id: str, product_name: str) -> str | None:
+    try:
+        return start_product_forecast_refresh_background(tenant_id, product_id)
+    except ValueError as exc:
+        logger.info("Forecast refresh was not started for product %s: %s", product_id, exc)
+        flash(f"Product '{product_name}' saved, but forecast refresh was not started: {exc}", "warning")
+        return None
+    except Exception as exc:
+        logger.warning("Forecast refresh failed to start for product %s", product_id, exc_info=True)
+        flash(f"Product '{product_name}' saved, but forecast refresh failed to start: {exc}", "warning")
+        return None
+
+
+def _forecast_mid_impressions(forecast: dict | None) -> float | None:
+    if not forecast:
+        return None
+    try:
+        return float(forecast["points"][0]["metrics"]["impressions"]["mid"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def _is_forecast_stale(forecast: dict | None) -> bool:
+    if not forecast or not forecast.get("valid_until"):
+        return False
+    try:
+        valid_until = datetime.fromisoformat(forecast["valid_until"].replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return valid_until <= datetime.now(UTC)
+
+
+def _build_forecast_status(product: Product, latest_job: SyncJob | None) -> dict:
+    impressions = _forecast_mid_impressions(product.forecast)
+    if latest_job and latest_job.status == "running":
+        state = "running"
+        label = "Refreshing"
+    elif latest_job and latest_job.status == "failed" and impressions is None:
+        state = "failed"
+        label = "Failed"
+    elif impressions is not None:
+        stale = _is_forecast_stale(product.forecast)
+        state = "stale" if stale else "ready"
+        label = "Stale" if stale else "Ready"
+    else:
+        state = "missing"
+        label = "Pending"
+
+    return {
+        "state": state,
+        "label": label,
+        "impressions": impressions,
+        "valid_until": product.forecast.get("valid_until") if product.forecast else None,
+        "last_error": latest_job.error_message if latest_job and latest_job.status == "failed" else None,
+    }
 
 
 def _format_to_dict(fmt: Format) -> dict:
@@ -470,6 +537,15 @@ def list_products(tenant_id):
                 }
 
             # Convert products to dict format for template
+            forecast_jobs = db_session.scalars(
+                select(SyncJob).filter_by(tenant_id=tenant_id, sync_type="forecast").order_by(SyncJob.started_at.desc())
+            ).all()
+            latest_forecast_jobs = {}
+            for job in forecast_jobs:
+                job_product_id = (job.progress or {}).get("product_id")
+                if job_product_id and job_product_id not in latest_forecast_jobs:
+                    latest_forecast_jobs[job_product_id] = job
+
             products_list = []
             for product in products:
                 # Use helper function to get pricing options (handles legacy fallback)
@@ -584,6 +660,7 @@ def list_products(tenant_id):
                     "is_dynamic_variant": getattr(product, "is_dynamic_variant", False),
                     "activation_key": getattr(product, "activation_key", None),
                     "product_card": getattr(product, "product_card", None),
+                    "forecast_status": _build_forecast_status(product, latest_forecast_jobs.get(product.product_id)),
                 }
                 products_list.append(product_dict)
             return render_template(
@@ -1309,7 +1386,13 @@ def add_product(tenant_id):
 
                 db_session.commit()
 
+                sync_id = None
+                if adapter_type == "google_ad_manager":
+                    sync_id = _start_product_forecast_refresh_or_warn(tenant_id, product.product_id, product.name)
+
                 flash(f"Product '{product.name}' created successfully!", "success")
+                if sync_id:
+                    flash("Forecast refresh started for this product.", "info")
                 # Redirect to products list
                 return redirect(url_for("products.list_products", tenant_id=tenant_id))
 
@@ -1886,7 +1969,13 @@ def edit_product(tenant_id, product_id):
                 db_session.refresh(product)
                 logger.info(f"[DEBUG] After commit - product.format_ids from DB: {product.format_ids}")
 
+                sync_id = None
+                if adapter_type == "google_ad_manager":
+                    sync_id = _start_product_forecast_refresh_or_warn(tenant_id, product.product_id, product.name)
+
                 flash(f"Product '{product.name}' updated successfully", "success")
+                if sync_id:
+                    flash("Forecast refresh started for this product.", "info")
                 return redirect(url_for("products.list_products", tenant_id=tenant_id))
 
             # GET request - show form
@@ -2118,6 +2207,26 @@ def edit_product(tenant_id, product_id):
         logger.error(f"Error editing product: {e}", exc_info=True)
         flash(f"Error editing product: {str(e)}", "error")
         return redirect(url_for("products.list_products", tenant_id=tenant_id))
+
+
+@products_bp.route("/<product_id>/forecast/refresh", methods=["POST"])
+@log_admin_action("refresh_product_forecast")
+@require_tenant_access()
+def refresh_product_forecast(tenant_id, product_id):
+    """Manually refresh a product's cached GAM availability forecast."""
+    try:
+        with get_db_session() as db_session:
+            product = ProductRepository(db_session, tenant_id).get_by_id(product_id)
+            if not product:
+                return jsonify({"error": "Product not found"}), 404
+
+        sync_id = start_product_forecast_refresh_background(tenant_id, product_id)
+        return jsonify({"sync_id": sync_id, "status": "running"})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("Failed to start forecast refresh for product %s", product_id)
+        return jsonify({"error": str(exc)}), 500
 
 
 @products_bp.route("/<product_id>/delete", methods=["DELETE"])
