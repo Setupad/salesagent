@@ -18,7 +18,7 @@ def fetch_product_availability_forecast(
     service = gam_client_manager.get_service("ForecastService")
     line_item = build_forecast_line_item(product, currency=currency, start_time=requested_at)
     options = {"includeTargetingCriteriaBreakdown": False, "includeContendingLineItems": False}
-    gam_forecast = service.getAvailabilityForecast(line_item, options)
+    gam_forecast = service.getAvailabilityForecast({"lineItem": line_item}, options)
     return map_availability_forecast_to_adcp(
         gam_forecast,
         currency=currency,

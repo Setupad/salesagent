@@ -1971,9 +1971,12 @@ def edit_product(tenant_id, product_id):
 
                 sync_id = None
                 if adapter_type == "google_ad_manager":
-                    sync_id = _start_product_forecast_refresh_or_warn(tenant_id, product.product_id, product.name)
+                    product_name = product.name
+                    sync_id = _start_product_forecast_refresh_or_warn(tenant_id, product.product_id, product_name)
+                else:
+                    product_name = product.name
 
-                flash(f"Product '{product.name}' updated successfully", "success")
+                flash(f"Product '{product_name}' updated successfully", "success")
                 if sync_id:
                     flash("Forecast refresh started for this product.", "info")
                 return redirect(url_for("products.list_products", tenant_id=tenant_id))
