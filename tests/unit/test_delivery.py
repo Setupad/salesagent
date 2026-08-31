@@ -24,6 +24,7 @@ Cross-references:
 - test_delivery_simulator.py: simulator service tests (kept separate)
 """
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
@@ -45,6 +46,7 @@ from src.core.schemas import (
     ReportingPeriod,
 )
 from src.core.testing_hooks import AdCPTestContext
+from src.core.tools._mcp import mcp_result
 from src.core.tools.media_buy_delivery import (
     _get_media_buy_delivery_impl,
     get_media_buy_delivery,
@@ -2148,8 +2150,6 @@ class TestDeliveryProtocol:
         with both content (string) and structured_content (response object).
         Covers: UC-004-MAIN-13
         """
-        from fastmcp.tools.tool import ToolResult
-
         buy = _make_mock_media_buy(media_buy_id="mb_tool")
         mock_adapter = MagicMock()
         mock_adapter.get_media_buy_delivery.return_value = _make_adapter_response(
@@ -2166,13 +2166,12 @@ class TestDeliveryProtocol:
             target_buys=[("mb_tool", buy)],
         )
 
-        # Simulate what the MCP wrapper does: ToolResult(content=str(response), structured_content=response)
-        tool_result = ToolResult(content=str(response), structured_content=response)
+        tool_result = mcp_result(response)
 
         # content is converted to list[TextContent] by FastMCP
         assert tool_result.content is not None
         assert len(tool_result.content) == 1
-        assert "delivery data" in tool_result.content[0].text.lower()
+        assert json.loads(tool_result.content[0].text) == tool_result.structured_content
         # structured_content contains the actual response data
         assert tool_result.structured_content is not None
 

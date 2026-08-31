@@ -319,6 +319,7 @@ def get_strategy_manager(context: Context | None) -> StrategyManager:
 from adcp.server.mcp_tools import ADCP_TOOL_DEFINITIONS
 from mcp.types import ToolAnnotations
 
+from src.core.schemas import CreateMediaBuyRequest
 from src.core.tool_error_logging import with_error_logging
 from src.core.tools.accounts import list_accounts, sync_accounts
 from src.core.tools.capabilities import get_adcp_capabilities
@@ -334,6 +335,15 @@ from src.core.tools.properties import list_authorized_properties
 from src.core.tools.task_management import complete_task, get_task, list_tasks
 
 _sdk_tool_defs = {td["name"]: td for td in ADCP_TOOL_DEFINITIONS}
+_LOCAL_TOOL_INPUT_SCHEMAS = {
+    "create_media_buy": CreateMediaBuyRequest,
+}
+
+
+def _set_tool_input_schema(tool_name: str, input_schema: dict[str, Any]) -> None:
+    tool: Any = mcp._local_provider._components[f"tool:{tool_name}@"]
+    tool._compat_parameters = tool.parameters
+    tool.parameters = input_schema
 
 
 def _register_tool(fn: Any) -> None:
@@ -346,6 +356,10 @@ def _register_tool(fn: Any) -> None:
         if sdk_def.get("annotations"):
             kwargs["annotations"] = ToolAnnotations(**sdk_def["annotations"])
     mcp.tool(**kwargs)(with_error_logging(fn))
+    if tool_name in _LOCAL_TOOL_INPUT_SCHEMAS:
+        _set_tool_input_schema(tool_name, _LOCAL_TOOL_INPUT_SCHEMAS[tool_name].model_json_schema(mode="validation"))
+    elif sdk_def and sdk_def.get("inputSchema"):
+        _set_tool_input_schema(tool_name, sdk_def["inputSchema"])
 
 
 _register_tool(list_accounts)

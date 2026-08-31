@@ -27,6 +27,11 @@ class TestMCPToolRoundtripMinimal:
     Uses the mcp_server fixture which starts a real MCP server with test database.
     """
 
+    async def _get_tool_schema(self, mcp_client, tool_name: str) -> dict:
+        tools = await mcp_client.list_tools()
+        tool = next(tool for tool in tools if tool.name == tool_name)
+        return getattr(tool, "inputSchema", None) or getattr(tool, "parameters", {})
+
     @pytest.fixture
     async def mcp_client(self, mcp_server, sample_tenant, sample_principal, sample_products):
         """Create MCP client for testing with test data."""
@@ -47,17 +52,23 @@ class TestMCPToolRoundtripMinimal:
         content = result.structured_content if hasattr(result, "structured_content") else result
         assert "products" in content
 
-    async def test_get_products_content_is_summary_not_json(self, mcp_client):
-        """MCP text content is a human-readable summary, not a JSON dump of structured_content."""
+    async def test_get_products_content_is_structured_json_fallback(self, mcp_client):
+        """MCP text content includes a JSON fallback for clients that hide structured_content."""
         import json
 
         result = await mcp_client.call_tool("get_products", {"brand": {"domain": "testbrand.com"}})
         text = result.content[0].text
-        assert text != json.dumps(result.structured_content)
-        assert not text.strip().startswith("{")
+        assert json.loads(text) == result.structured_content
 
     async def test_create_media_buy_minimal(self, mcp_client):
-        """Test create_media_buy with minimal required parameters."""
+        """Test create_media_buy publishes and accepts minimal required AdCP parameters."""
+        schema = await self._get_tool_schema(mcp_client, "create_media_buy")
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        for field_name in ("brand", "idempotency_key", "packages", "start_time", "end_time"):
+            assert field_name in properties
+        assert {"brand", "idempotency_key", "start_time", "end_time"}.issubset(required)
+
         # Get a product first
         products_result = await mcp_client.call_tool(
             "get_products", {"brand": {"domain": "testbrand.com"}, "brief": "test"}
