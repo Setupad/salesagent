@@ -25,6 +25,7 @@ def fetch_product_availability_forecast(
         gam_forecast,
         currency=currency,
         product_id=product.product_id,
+        generated_at=requested_at,
         valid_until=requested_at + timedelta(hours=DEFAULT_FORECAST_TTL_HOURS),
     )
 
@@ -130,13 +131,24 @@ def map_availability_forecast_to_adcp(
     *,
     currency: str,
     product_id: str,
+    generated_at: datetime,
     valid_until: datetime,
+    duration_days: int = DEFAULT_FORECAST_DURATION_DAYS,
 ) -> dict[str, Any]:
+    forecast_end = generated_at + timedelta(days=duration_days)
     forecast = {
         "forecast_range_unit": "availability",
         "method": "modeled",
         "currency": currency,
+        "generated_at": generated_at.isoformat(),
         "valid_until": valid_until.isoformat(),
+        "ext": {
+            "forecast_period": {
+                "duration_days": duration_days,
+                "start": _to_wire_datetime(generated_at),
+                "end": _to_wire_datetime(forecast_end),
+            }
+        },
         "points": [
             {
                 "product_id": product_id,
@@ -151,6 +163,10 @@ def map_availability_forecast_to_adcp(
         ],
     }
     return DeliveryForecast.model_validate(forecast).model_dump(mode="json", exclude_none=True)
+
+
+def _to_wire_datetime(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _get_gam_value(gam_forecast: Any, field_name: str) -> Any:

@@ -132,10 +132,30 @@ async def lifespan_context(app):
         except Exception as e:
             logger.error(f"Failed to start media buy status scheduler: {e}", exc_info=True)
 
+        # Startup: Initialize product forecast scheduler
+        from src.services.product_forecast_scheduler import start_product_forecast_scheduler
+
+        logger.info("Starting product forecast scheduler...")
+        try:
+            await start_product_forecast_scheduler()
+            logger.info("✅ Product forecast scheduler started")
+        except Exception as e:
+            logger.error(f"Failed to start product forecast scheduler: {e}", exc_info=True)
+
     yield
 
     if not schedulers_enabled:
         return
+
+    # Shutdown: Stop product forecast scheduler
+    from src.services.product_forecast_scheduler import stop_product_forecast_scheduler
+
+    logger.info("Stopping product forecast scheduler...")
+    try:
+        await stop_product_forecast_scheduler()
+        logger.info("✅ Product forecast scheduler stopped")
+    except Exception as e:
+        logger.error(f"Failed to stop product forecast scheduler: {e}", exc_info=True)
 
     # Shutdown: Stop media buy status scheduler
     from src.services.media_buy_status_scheduler import stop_media_buy_status_scheduler

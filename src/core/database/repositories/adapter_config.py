@@ -87,6 +87,16 @@ class AdapterConfigRepository:
         stmt = select(AdapterConfig).filter_by(tenant_id=self._tenant_id)
         return self._session.scalars(stmt).first()
 
+    @classmethod
+    def list_gam_configs_with_credentials(cls, session: Session) -> list[AdapterConfig]:
+        """List GAM adapter configs that can make API calls."""
+        stmt = (
+            select(AdapterConfig)
+            .where(AdapterConfig.adapter_type == "google_ad_manager", AdapterConfig.gam_network_code.isnot(None))
+            .order_by(AdapterConfig.tenant_id)
+        )
+        return [config for config in session.scalars(stmt).all() if cls.has_gam_credentials(config)]
+
     def get_adapter_type(self) -> str | None:
         """Get the adapter type string (e.g., 'google_ad_manager', 'mock'), or None.
 

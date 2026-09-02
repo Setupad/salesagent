@@ -34,3 +34,12 @@ class CurrencyLimitRepository:
             currency_code=currency_code,
         )
         return self._session.scalars(stmt).first()
+
+    def get_default_currency_code(self, default: str = "USD") -> str:
+        """Get the tenant's first configured currency code, or a default."""
+        stmt = (
+            select(CurrencyLimit.currency_code)
+            .filter_by(tenant_id=self._tenant_id)
+            .order_by(CurrencyLimit.currency_code)
+        )
+        return self._session.scalars(stmt).first() or default

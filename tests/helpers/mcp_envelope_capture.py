@@ -39,6 +39,8 @@ def call_mcp_tool_capturing_envelope(
                     "src.services.delivery_webhook_scheduler.stop_delivery_webhook_scheduler",
                     "src.services.media_buy_status_scheduler.start_media_buy_status_scheduler",
                     "src.services.media_buy_status_scheduler.stop_media_buy_status_scheduler",
+                    "src.services.product_forecast_scheduler.start_product_forecast_scheduler",
+                    "src.services.product_forecast_scheduler.stop_product_forecast_scheduler",
                 ):
                     stack.enter_context(patch(target, AsyncMock()))
             async with Client(mcp) as client:

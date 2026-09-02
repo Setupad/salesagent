@@ -89,6 +89,7 @@ class FakeProductUoW:
 
 
 def test_maps_gam_availability_forecast_to_adcp_delivery_forecast() -> None:
+    generated_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     valid_until = datetime.now(UTC) + timedelta(hours=6)
     gam_forecast = {
         "matchedUnits": 120_000,
@@ -100,13 +101,20 @@ def test_maps_gam_availability_forecast_to_adcp_delivery_forecast() -> None:
         gam_forecast,
         currency="USD",
         product_id="prod_video_1",
+        generated_at=generated_at,
         valid_until=valid_until,
     )
 
     assert forecast["forecast_range_unit"] == "availability"
     assert forecast["method"] == "modeled"
     assert forecast["currency"] == "USD"
+    assert forecast["generated_at"] == generated_at.isoformat().replace("+00:00", "Z")
     assert forecast["valid_until"] == valid_until.isoformat().replace("+00:00", "Z")
+    assert forecast["ext"]["forecast_period"] == {
+        "duration_days": 30,
+        "start": "2026-01-01T12:00:00Z",
+        "end": "2026-01-31T12:00:00Z",
+    }
     assert forecast["points"] == [
         {
             "product_id": "prod_video_1",
