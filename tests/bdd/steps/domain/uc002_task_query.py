@@ -5,7 +5,6 @@ in ctx["task_query_params"]. When step passes ALL params to list_tasks().
 If production rejects a param (TypeError), Then steps xfail with the real
 error as proof of the SPEC-PRODUCTION GAP.
 
-beads: salesagent-9vgz.86, salesagent-9vgz.88, salesagent-9vgz.90
 """
 
 from __future__ import annotations
@@ -266,7 +265,6 @@ def when_query_task_list(ctx: dict) -> None:
             result = _dispatch_list_tasks_e2e(ctx, **params)
         else:
             result = _dispatch_list_tasks(env, **params)
-        ctx["response"] = result
         ctx["task_list_result"] = result
     except (AdCPError, TypeError, Exception) as exc:
         ctx["error"] = exc

@@ -6,7 +6,6 @@ Validates that:
 - Exception → ToolError format mapping exists
 - Dead A2A error map is not present (real translation in adcp_a2a_server.py)
 
-beads: salesagent-b61l.11
 """
 
 import pytest
@@ -205,7 +204,7 @@ class TestRecoveryClassification:
     def test_base_error_defaults_to_transient(self):
         """AdCPError base class defaults to recovery='transient'.
 
-        Recovery follows the WIRE code (salesagent-nr2q): the base
+        Recovery follows the WIRE code : the base
         INTERNAL_ERROR maps to SERVICE_UNAVAILABLE, pinned transient in the
         enumMetadata. This is the normalize_to_adcp_error crash-wrap path —
         buyers may retry a generic server failure.
@@ -225,7 +224,7 @@ class TestRecoveryClassification:
     def test_not_found_error_defaults_to_correctable(self):
         """AdCPNotFoundError (the *base*) defaults to recovery='correctable'.
 
-        Recovery follows the WIRE code (salesagent-nr2q): NOT_FOUND maps to
+        Recovery follows the WIRE code : NOT_FOUND maps to
         INVALID_REQUEST, pinned correctable in the enumMetadata — the buyer
         holds the lever (re-issue with a valid id), same as the typed
         subclasses. Account-family subclasses whose own wire codes are pinned
@@ -325,7 +324,7 @@ class TestRecoveryClassification:
         BUDGET_EXHAUSTED is terminal per the pinned error-code.json enumMetadata
         (#1417): an exhausted budget cannot be recovered autonomously —
         an operator must add budget — so the buyer agent must not retry.
-        Covers: salesagent-u60m (PR #1083 review)
+        Covers: (PR #1083 review)
         """
         from src.core.exceptions import AdCPBudgetExhaustedError
 
@@ -339,12 +338,24 @@ class TestRecoveryClassification:
         exc = AdCPServiceUnavailableError("product temporarily unavailable")
         assert exc.recovery == "transient"
 
-    def test_recovery_can_be_overridden_per_instance(self):
-        """Callers can override recovery for specific raise sites."""
+    def test_recovery_cannot_be_overridden_per_instance(self):
+        """A raise site cannot choose a recovery — it chooses a CLASS.
+
+        REPLACES test_recovery_can_be_overridden_per_instance, which pinned the
+        exact behaviour this epic exists to remove: a free ``recovery=`` kwarg let
+        a call site pair any code with any classification, and the wire carried
+        the contradiction (SERVICE_UNAVAILABLE + terminal) with a green test
+        grading it. The contract is excised, so the test that pinned it is
+        replaced rather than deleted — what was "callers can" is now "callers
+        cannot", asserted the only way an excised argument can be.
+        """
         from src.core.exceptions import AdCPValidationError
 
-        exc = AdCPValidationError("permanent schema mismatch", recovery="terminal")
-        assert exc.recovery == "terminal"
+        with pytest.raises(TypeError):
+            AdCPValidationError("permanent schema mismatch", recovery="terminal")
+
+        # And the derived value stands on its own: VALIDATION_ERROR is pinned correctable.
+        assert AdCPValidationError("permanent schema mismatch").recovery == "correctable"
 
     def test_to_dict_includes_recovery(self):
         """to_dict() must include recovery field in serialized output."""
@@ -355,13 +366,17 @@ class TestRecoveryClassification:
         assert "recovery" in d
         assert d["recovery"] == "correctable"
 
-    def test_to_dict_includes_overridden_recovery(self):
-        """to_dict() must serialize overridden recovery value."""
+    def test_to_dict_serializes_the_derived_recovery(self):
+        """to_dict() serializes the classification the code derives.
+
+        REPLACES test_to_dict_includes_overridden_recovery. There is no overridden
+        value to serialize any more; what must hold is that the serializer reports
+        the pin's answer for the wire code, which is what a buyer reads.
+        """
         from src.core.exceptions import AdCPAdapterError
 
-        exc = AdCPAdapterError("permanent config error", recovery="terminal")
-        d = exc.to_dict()
-        assert d["recovery"] == "terminal"
+        exc = AdCPAdapterError("permanent config error")
+        assert exc.to_dict()["recovery"] == "transient"  # SERVICE_UNAVAILABLE, pinned
 
 
 # ---------------------------------------------------------------------------
@@ -679,7 +694,7 @@ class TestErrorCodeWireTranslation:
         # pass through (NOT_FOUND, INTERNAL_ERROR) are explicitly mapped to
         # STANDARD targets — see test_internal_codes_translated_to_wire_safe_codes
         # below. CONFIGURATION_ERROR is a _SPEC_SUPPLEMENT_CODES pass-through
-        # (salesagent-nr2q), like CREATIVE_NOT_FOUND.
+        # , like CREATIVE_NOT_FOUND.
         assert translate_error_code("SOME_UNKNOWN_CODE_THAT_IS_NOT_MAPPED") == "SOME_UNKNOWN_CODE_THAT_IS_NOT_MAPPED"
 
     def test_internal_codes_translated_to_wire_safe_codes(self):
@@ -707,7 +722,7 @@ class TestErrorCodeWireTranslation:
 
         # CONFIGURATION_ERROR is no longer internal/demoted: the pinned enum
         # defines it (recovery=terminal, "MUST NOT auto-retry"), so it passes
-        # through untranslated via _SPEC_SUPPLEMENT_CODES (salesagent-nr2q).
+        # through untranslated via _SPEC_SUPPLEMENT_CODES .
         assert "CONFIGURATION_ERROR" not in INTERNAL_CODES
         assert translate_error_code("CONFIGURATION_ERROR") == "CONFIGURATION_ERROR"
         assert "CONFIGURATION_ERROR" in WIRE_STANDARD_CODES

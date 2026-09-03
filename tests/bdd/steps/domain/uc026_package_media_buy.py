@@ -3,7 +3,6 @@
 Package operations go through create_media_buy / update_media_buy.
 Given steps build request kwargs, When steps dispatch through MediaBuyCreateEnv.
 
-beads: salesagent-av7
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from typing import Any
 
 from pytest_bdd import given, parsers, then, when
 
-from tests.bdd.steps._outcome_helpers import _require_error
+from tests.bdd.steps._outcome_helpers import _require_error, payload_or_none, require_payload
 from tests.bdd.steps.generic.given_media_buy import _ensure_request_defaults
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -209,8 +208,7 @@ def _get_overlay_field(pkg: Any, field: str) -> Any:
 
 def _get_packages(ctx: dict) -> list:
     """Extract packages from create or update media_buy response."""
-    resp = ctx.get("response")
-    assert resp is not None, f"Expected a response. Error: {ctx.get('error')}"
+    resp = require_payload(ctx)
     # CreateMediaBuyResult wraps .response which has .packages
     inner = getattr(resp, "response", resp)
     packages = getattr(inner, "packages", None)
@@ -275,8 +273,7 @@ def _create_media_buy_for_update(ctx: dict, **pkg_overrides: Any) -> None:
     req = CreateMediaBuyRequest(**kwargs)
     dispatch_request(ctx, req=req)
 
-    resp = ctx.get("response")
-    assert resp is not None, f"Failed to create media buy for update setup: {ctx.get('error')}"
+    resp = require_payload(ctx)
     inner = getattr(resp, "response", resp)
     mb_id = getattr(inner, "media_buy_id", None)
     assert mb_id, "Created media buy has no media_buy_id"
@@ -287,7 +284,12 @@ def _create_media_buy_for_update(ctx: dict, **pkg_overrides: Any) -> None:
         ctx["existing_package_id"] = _pkg_field(pkg_obj, "package_id")
         ctx["existing_package"] = pkg_obj
     # Clear response so When step gets clean state
-    ctx.pop("response", None)
+    # Clear every source the payload accessors read, not just the retired
+    # ctx["response"]: a When that raises BEFORE dispatching leaves the previous
+    # step's TransportResult in ctx, and require_payload/payload_or_none would
+    # serve it as though this step had produced it.
+    ctx.pop("result", None)
+    ctx.pop("self_dispatched_response", None)
     ctx.pop("error", None)
     # Reset request_kwargs for the update
     ctx.pop("request_kwargs", None)
@@ -1590,14 +1592,20 @@ def _dispatch_create(ctx: dict) -> None:
 
 def _promote_create_errors(ctx: dict) -> None:
     """Promote CreateMediaBuyError responses to ctx['error']."""
-    resp = ctx.get("response")
+    resp = payload_or_none(ctx)
     if resp is None:
         return
     from src.core.schemas._base import CreateMediaBuyError as CMBError
 
     if hasattr(resp, "response") and isinstance(resp.response, CMBError) and resp.response.errors:
         ctx["error"] = resp.response.errors[0]
-        del ctx["response"]
+        # This promotion makes the error payload INVISIBLE to success-path Thens —
+        # that was the point of the old `del ctx["response"]`, and retiring the key
+        # did not retire the requirement. Clear every source the payload accessors
+        # read, or require_payload/payload_or_none hand the error payload straight
+        # back and a success-path Then grades it as a success.
+        ctx.pop("result", None)
+        ctx.pop("self_dispatched_response", None)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1874,8 +1882,7 @@ def then_operation_succeeds(ctx: dict) -> None:
     dedicated follow-on Then steps already present in each scenario.
     """
     assert "error" not in ctx, f"Expected success but got error: {ctx.get('error')}"
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response but none was recorded"
+    resp = require_payload(ctx)
 
     # Check status on the response itself or on an inner .response wrapper
     # (CreateMediaBuyResult wraps .response which may carry status).
@@ -1980,15 +1987,9 @@ def then_paused_unchanged(ctx: dict) -> None:
     )
     original_paused = _pkg_field(existing_pkg, "paused")
     if actual_paused is None:
-        pytest.xfail(
-            "SPEC-PRODUCTION GAP: paused not echoed in update response — "
-            "cannot verify unchanged. FIXME(salesagent-9vgz.1)"
-        )
+        pytest.xfail("SPEC-PRODUCTION GAP: paused not echoed in update response — cannot verify unchanged. FIXME")
     if original_paused is None:
-        pytest.xfail(
-            "SPEC-PRODUCTION GAP: paused not present on existing package — "
-            "cannot verify unchanged. FIXME(salesagent-9vgz.1)"
-        )
+        pytest.xfail("SPEC-PRODUCTION GAP: paused not present on existing package — cannot verify unchanged. FIXME")
     assert actual_paused == original_paused, f"Paused state changed: was {original_paused!r}, now {actual_paused!r}"
 
 
@@ -2014,7 +2015,7 @@ def then_no_delivery(ctx: dict) -> None:
     assert pkg_id is not None, "Package missing package_id — cannot verify delivery state"
     paused = _pkg_field(pkg, "paused")
     if paused is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: paused field absent — cannot verify no-delivery. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: paused field absent — cannot verify no-delivery. FIXME")
     assert paused is True, f"Expected paused=true (no delivery), got paused={paused!r}"
 
 
@@ -2036,9 +2037,7 @@ def then_resume_delivery(ctx: dict) -> None:
     pkg = packages[0]
     paused = _pkg_field(pkg, "paused")
     if paused is None:
-        pytest.xfail(
-            "SPEC-PRODUCTION GAP: paused field absent — cannot verify resumed delivery. FIXME(salesagent-9vgz.1)"
-        )
+        pytest.xfail("SPEC-PRODUCTION GAP: paused field absent — cannot verify resumed delivery. FIXME")
     assert paused is False, f"Expected paused=false (resumed), got paused={paused}"
 
 
@@ -2054,10 +2053,10 @@ def then_pkg_has_keyword(ctx: dict, keyword: str) -> None:
     pkg = packages[0]
     overlay = _pkg_field(pkg, "targeting_overlay")
     if overlay is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: targeting_overlay not present in response. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: targeting_overlay not present in response. FIXME")
     kw_targets = _get_overlay_keywords(pkg, "keyword_targets")
     if kw_targets is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not present in targeting_overlay. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not present in targeting_overlay. FIXME")
     found = _find_keyword(kw_targets, keyword)
     assert found is not None, (
         f"Keyword '{keyword}' not found in targeting_overlay.keyword_targets. "
@@ -2081,7 +2080,7 @@ def then_keyword_with_match_type(ctx: dict, keyword: str, match_type: str) -> No
     pkg = pkgs[0]
     kw_targets = _get_overlay_keywords(pkg, "keyword_targets")
     if kw_targets is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not in targeting_overlay. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not in targeting_overlay. FIXME")
     found = _find_keyword(kw_targets, keyword, match_type)
     assert found is not None, (
         f"Keyword '{keyword}' with match_type '{match_type}' not found in targeting_overlay. "
@@ -2102,14 +2101,12 @@ def then_keyword_updated_bid(ctx: dict, keyword: str, match_type: str, price: st
     pkg = pkgs[0]
     kw_targets = _get_overlay_keywords(pkg, "keyword_targets")
     if kw_targets is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not in targeting_overlay. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not in targeting_overlay. FIXME")
     found = _find_keyword(kw_targets, keyword, match_type)
     assert found is not None, f"Keyword '{keyword}' with match_type '{match_type}' not found in targeting_overlay"
     actual_bid = _keyword_field(found, "bid_price")
     if actual_bid is None:
-        pytest.xfail(
-            f"SPEC-PRODUCTION GAP: keyword '{keyword}' found but bid_price not echoed. FIXME(salesagent-9vgz.1)"
-        )
+        pytest.xfail(f"SPEC-PRODUCTION GAP: keyword '{keyword}' found but bid_price not echoed. FIXME")
     assert float(actual_bid) == float(price), f"Expected bid_price {price} for keyword '{keyword}', got {actual_bid}"
 
 
@@ -2163,7 +2160,7 @@ def then_negative_keyword(ctx: dict, keyword: str) -> None:
     pkg = pkgs[0]
     neg_keywords = _get_overlay_keywords(pkg, "negative_keywords")
     if neg_keywords is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: negative_keywords not in targeting_overlay. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: negative_keywords not in targeting_overlay. FIXME")
     found = _find_keyword(neg_keywords, keyword)
     assert found is not None, (
         f"Negative keyword '{keyword}' not found in targeting_overlay.negative_keywords. "
@@ -2203,13 +2200,12 @@ def then_updated_keyword_and_negative(ctx: dict) -> None:
     pkg = pkgs[0]
     overlay = _pkg_field(pkg, "targeting_overlay")
     if overlay is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: targeting_overlay not present in response. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: targeting_overlay not present in response. FIXME")
     kw_targets = _get_overlay_keywords(pkg, "keyword_targets")
     neg_keywords = _get_overlay_keywords(pkg, "negative_keywords")
     if kw_targets is None and neg_keywords is None:
         pytest.xfail(
-            "SPEC-PRODUCTION GAP: neither keyword_targets nor negative_keywords "
-            "present in targeting_overlay. FIXME(salesagent-9vgz.1)"
+            "SPEC-PRODUCTION GAP: neither keyword_targets nor negative_keywords present in targeting_overlay. FIXME"
         )
     # Both dimensions must be non-empty — cross-dimension mixing means both were updated
     assert kw_targets is not None and len(kw_targets) > 0, (
@@ -2248,7 +2244,7 @@ def then_keyword_bid_ceiling(ctx: dict, price: str) -> None:
     # Check keyword_targets in the response targeting_overlay
     kw_targets = _get_overlay_keywords(pkg, "keyword_targets")
     if kw_targets is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not in targeting_overlay. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: keyword_targets not in targeting_overlay. FIXME")
     # Find keyword with the expected bid_price from the production response
     expected_price = float(price)
     found_with_bid = None
@@ -2319,7 +2315,7 @@ def then_new_pkg_in_mb(ctx: dict, mb_id: str) -> None:
     # Verify the response media_buy_id matches the target (different from original)
     named_mb_ids = ctx.get("named_media_buy_ids", {})
     original_mb_id = named_mb_ids.get("mb-A") or ctx.get("existing_media_buy_id")
-    resp = ctx.get("response")
+    resp = payload_or_none(ctx)
     if resp is not None:
         inner = getattr(resp, "response", resp)
         resp_mb_id = getattr(inner, "media_buy_id", None)
@@ -2617,10 +2613,7 @@ def then_catalogs_unchanged(ctx: dict) -> None:
     pkgs = _assert_has_packages(ctx)
     actual_catalogs = _pkg_field(pkgs[0], "catalogs")
     if actual_catalogs is None:
-        pytest.xfail(
-            "SPEC-PRODUCTION GAP: catalogs not echoed in update response — "
-            "cannot verify unchanged. FIXME(salesagent-9vgz.1)"
-        )
+        pytest.xfail("SPEC-PRODUCTION GAP: catalogs not echoed in update response — cannot verify unchanged. FIXME")
     assert isinstance(actual_catalogs, list), f"Expected catalogs to be a list, got {type(actual_catalogs)}"
     # Compare with original package's catalogs — content equality, not just length
     existing_pkg = ctx.get("existing_package")
@@ -2650,8 +2643,7 @@ def then_goals_unchanged(ctx: dict) -> None:
     actual_goals = _pkg_field(pkgs[0], "optimization_goals")
     if actual_goals is None:
         pytest.xfail(
-            "SPEC-PRODUCTION GAP: optimization_goals not echoed in update response — "
-            "cannot verify unchanged. FIXME(salesagent-9vgz.1)"
+            "SPEC-PRODUCTION GAP: optimization_goals not echoed in update response — cannot verify unchanged. FIXME"
         )
     assert isinstance(actual_goals, list), f"Expected optimization_goals to be a list, got {type(actual_goals)}"
     # Compare with original package's goals — content equality, not just length
@@ -2683,10 +2675,7 @@ def then_pkg_goals(ctx: dict, expected: str) -> None:
     pkgs = _assert_has_packages(ctx)
     actual_goals = _pkg_field(pkgs[0], "optimization_goals")
     if actual_goals is None:
-        pytest.xfail(
-            f"SPEC-PRODUCTION GAP: optimization_goals not echoed in response. "
-            f"Expected {expected}. FIXME(salesagent-9vgz.1)"
-        )
+        pytest.xfail(f"SPEC-PRODUCTION GAP: optimization_goals not echoed in response. Expected {expected}. FIXME")
     expected_parsed = json.loads(expected)
     if isinstance(actual_goals, list) and isinstance(expected_parsed, list):
         actual_normalized = [_normalize_item(ag) for ag in actual_goals]
@@ -2764,10 +2753,10 @@ def then_targeting_audience(ctx: dict, audience_id: str) -> None:
     pkg = pkgs[0]
     overlay = _pkg_field(pkg, "targeting_overlay")
     if overlay is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: targeting_overlay not present in response. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: targeting_overlay not present in response. FIXME")
     audiences = _get_overlay_field(pkg, "audiences")
     if audiences is None:
-        pytest.xfail("SPEC-PRODUCTION GAP: audiences not in targeting_overlay. FIXME(salesagent-9vgz.1)")
+        pytest.xfail("SPEC-PRODUCTION GAP: audiences not in targeting_overlay. FIXME")
     assert isinstance(audiences, list), f"Expected audiences to be a list, got {type(audiences)}"
     assert len(audiences) == 1, f"Expected exactly 1 audience, got {len(audiences)}"
     aud = audiences[0]
@@ -2784,10 +2773,7 @@ def then_old_catalog_absent(ctx: dict, catalog_id: str) -> None:
     pkgs = _assert_has_packages(ctx)
     catalogs = _pkg_field(pkgs[0], "catalogs")
     if catalogs is None:
-        pytest.xfail(
-            "SPEC-PRODUCTION GAP: catalogs not echoed in response — "
-            "cannot verify old catalog absent. FIXME(salesagent-9vgz.1)"
-        )
+        pytest.xfail("SPEC-PRODUCTION GAP: catalogs not echoed in response — cannot verify old catalog absent. FIXME")
     for cat in catalogs:
         cat_id = cat.get("catalog_id") if isinstance(cat, dict) else getattr(cat, "catalog_id", None)
         assert cat_id != catalog_id, f"Old catalog '{catalog_id}' should NOT be present after replacement but was found"
@@ -2804,8 +2790,7 @@ def then_old_audience_absent(ctx: dict, audience_id: str) -> None:
     audiences = _get_overlay_field(pkg, "audiences")
     if audiences is None:
         pytest.xfail(
-            "SPEC-PRODUCTION GAP: audiences not in targeting_overlay — "
-            "cannot verify old audience absent. FIXME(salesagent-9vgz.1)"
+            "SPEC-PRODUCTION GAP: audiences not in targeting_overlay — cannot verify old audience absent. FIXME"
         )
     for aud in audiences:
         aud_id = aud.get("audience_id") if isinstance(aud, dict) else getattr(aud, "audience_id", None)

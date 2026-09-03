@@ -100,7 +100,7 @@ class TestCreativeLifecycleMCP:
 
         with patch("src.core.creative_agent_registry.CreativeAgentRegistry.get_format") as mock_get:
             # Mock get_format to return format from our dict
-            def get_format_side_effect(agent_url, format_id):
+            def get_format_side_effect(agent_url, format_id, **_kwargs):
                 return mock_formats.get(format_id)
 
             mock_get.side_effect = get_format_side_effect
@@ -1060,7 +1060,7 @@ class TestCreativeLifecycleMCP:
             mock_adapter_instance = mock_adapter.return_value
             mock_adapter_instance.get_supported_pricing_models.return_value = {"cpm", "vcpm", "cpc", "flat_rate"}
             mock_adapter_instance.validate_media_buy_request.return_value = []
-            mock_adapter_instance.create_media_buy.return_value = CreateMediaBuySuccess(
+            mock_adapter_instance.create_media_buy.return_value = CreateMediaBuySuccess.carrier(
                 media_buy_id="test_buy_123",
                 packages=[
                     Package(

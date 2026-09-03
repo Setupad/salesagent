@@ -4,7 +4,6 @@ Given steps build ctx["update_kwargs"], assembled into UpdateMediaBuyRequest
 in the When step. Background steps set up the existing media buy via
 conftest's _harness_env.
 
-beads: salesagent-82p
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from typing import Any
 from pytest_bdd import given, parsers, then, when
 
 from tests.bdd.steps._harness_db import db_session
-from tests.bdd.steps._outcome_helpers import _require_response
+from tests.bdd.steps._outcome_helpers import payload_or_none, require_payload
 from tests.bdd.steps.generic._auth import authenticate_env_as
 from tests.bdd.steps.generic._dispatch import dispatch_request
 from tests.bdd.steps.generic.given_media_buy import _resolve_date_token
@@ -28,7 +27,7 @@ from tests.bdd.steps.generic.given_media_buy import _resolve_date_token
 # but MediaPackageFactory uses a Sequence (pkg_0000, pkg_0001, ...). Step
 # definitions must resolve the label to the real database package_id
 # before comparing or operating on packages. See UC-019 principal_id
-# pattern (salesagent-vmqv) for the same approach.
+# pattern for the same approach.
 
 
 def _register_package(ctx: dict, label: str, package: Any) -> None:
@@ -762,7 +761,7 @@ def given_package_update_negative_keywords_add(ctx: dict) -> None:
     hardcoded defaults. Feature files using this step do not provide a DataTable;
     the ':' is part of the step text pattern matching the Gherkin scenario phrasing.
 
-    FIXME(salesagent-9vgz.1): Accept datatable parameter when feature files provide one.
+    FIXME: Accept datatable parameter when feature files provide one.
     """
     _set_keyword_field_on_package(ctx, "negative_keywords_add", [{"keyword": "cheap", "match_type": "exact"}])
 
@@ -775,7 +774,7 @@ def given_package_update_negative_keywords_remove(ctx: dict) -> None:
     hardcoded defaults. Feature files using this step do not provide a DataTable;
     the ':' is part of the step text pattern matching the Gherkin scenario phrasing.
 
-    FIXME(salesagent-9vgz.1): Accept datatable parameter when feature files provide one.
+    FIXME: Accept datatable parameter when feature files provide one.
     """
     _set_keyword_field_on_package(ctx, "negative_keywords_remove", [{"keyword": "cheap", "match_type": "exact"}])
 
@@ -827,7 +826,7 @@ def when_send_update_request(ctx: dict) -> None:
 
 def _promote_update_errors(ctx: dict) -> None:
     """Promote UpdateMediaBuyError responses to ctx['error'] for Then steps."""
-    resp = ctx.get("response")
+    resp = payload_or_none(ctx)
     if resp is None:
         return
     from src.core.schemas._base import UpdateMediaBuyError
@@ -835,7 +834,13 @@ def _promote_update_errors(ctx: dict) -> None:
     if isinstance(resp, UpdateMediaBuyError) and resp.errors:
         ctx["error"] = resp.errors[0]
         ctx["error_response"] = resp
-        del ctx["response"]
+        # This promotion makes the error payload INVISIBLE to success-path Thens —
+        # that was the point of the old `del ctx["response"]`, and retiring the key
+        # did not retire the requirement. Clear every source the payload accessors
+        # read, or require_payload/payload_or_none hand the error payload straight
+        # back and a success-path Then grades it as a success.
+        ctx.pop("result", None)
+        ctx.pop("self_dispatched_response", None)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -879,8 +884,7 @@ def then_start_end_time_unchanged(ctx: dict) -> None:
 @then("the response should contain media_buy_id")
 def then_response_has_media_buy_id(ctx: dict) -> None:
     """Assert response contains media_buy_id matching the existing media buy."""
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response"
+    resp = require_payload(ctx)
     actual = getattr(resp, "media_buy_id", None)
     assert actual is not None, f"Expected media_buy_id in response, got {actual!r}"
     mb = ctx.get("existing_media_buy")
@@ -894,8 +898,7 @@ def then_response_has_media_buy_id(ctx: dict) -> None:
 @then("the response should contain implementation_date that is null")
 def then_implementation_date_null(ctx: dict) -> None:
     """Assert response has a null implementation_date (pending approval)."""
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response"
+    resp = require_payload(ctx)
     assert resp.implementation_date is None, (
         f"Expected implementation_date to be None (pending approval), got {resp.implementation_date!r}"
     )
@@ -911,14 +914,13 @@ def then_implementation_date_not_null(ctx: dict) -> None:
     """
     from datetime import datetime
 
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response — no response in ctx"
+    resp = require_payload(ctx)
     # Guard: this step only makes sense on a success response, not an error
     assert "error" not in ctx, f"Response is an error ({ctx.get('error')}) — cannot check implementation_date on error"
     impl_date = resp.implementation_date
     # Step text claims "not null" unconditionally — hard assert.
     # If production doesn't populate this, the SCENARIO should be xfailed in conftest.py,
-    # not the step body. See salesagent-ghgx.
+    # not the step body.
     assert impl_date is not None, (
         "implementation_date is None in response — step text claims 'not null' unconditionally"
     )
@@ -942,8 +944,7 @@ def then_affected_packages_include(ctx: dict, package_id: str) -> None:
     `package_id` is a Gherkin label — resolve it to the real package_id
     produced by the factory before comparing against the production response.
     """
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response"
+    resp = require_payload(ctx)
     affected = getattr(resp, "affected_packages", None) or []
     pkg_ids = [
         getattr(p, "package_id", None) or (p.get("package_id") if isinstance(p, dict) else None) for p in affected
@@ -961,8 +962,7 @@ def then_affected_packages_present(ctx: dict) -> None:
     package on the media buy being updated. Presence alone (len > 0) is not
     enough — the specific package_id from ctx["existing_package"] must appear.
     """
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response — no response in ctx"
+    resp = require_payload(ctx)
     assert "error" not in ctx, f"Update errored ({ctx.get('error')}) — cannot check affected_packages on error"
     affected = getattr(resp, "affected_packages", None)
     assert affected is not None, (
@@ -996,8 +996,7 @@ def then_affected_package_budget(ctx: dict, budget: int) -> None:
     MUST echo the requested budget. If production doesn't echo budget, that's
     a SPEC-PRODUCTION GAP (xfail the scenario).
     """
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response — no response in ctx"
+    resp = require_payload(ctx)
     # Guard: this step only makes sense on a success response
     assert "error" not in ctx, f"Response is an error ({ctx.get('error')}) — cannot check budget on error"
     affected = getattr(resp, "affected_packages", None) or []
@@ -1026,7 +1025,7 @@ def then_affected_package_budget(ctx: dict, budget: int) -> None:
         actual_budget = pkg.get("budget")
     # Step text claims "updated budget of {budget}" unconditionally — hard assert.
     # If production doesn't echo budget, the SCENARIO should be xfailed in conftest.py.
-    # See salesagent-2c9b.
+    #
     assert actual_budget is not None, (
         f"affected package '{expected_pkg_id}' budget is None — step text claims "
         f"'updated budget of {budget}' unconditionally"
@@ -1050,8 +1049,7 @@ def then_response_has_sandbox(ctx: dict) -> None:
     """
     from pydantic import BaseModel
 
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response — no response in ctx"
+    resp = require_payload(ctx)
     # Guard: this step only makes sense on a success response, not an error
     assert "error" not in ctx, f"Update errored ({ctx.get('error')}) — cannot check sandbox flag on an error response"
     # Guard: response must be a Pydantic model (not a raw dict/string) — the
@@ -1066,7 +1064,7 @@ def then_response_has_sandbox(ctx: dict) -> None:
         sandbox = dumped.get("sandbox")
     # Step text claims "should include a sandbox flag" unconditionally — hard assert.
     # If production doesn't include sandbox, the SCENARIO should be xfailed in conftest.py.
-    # See salesagent-n3bf.
+    #
     assert sandbox is not None, (
         f"sandbox flag not present on response (type: {type(resp).__name__}) — "
         "step text claims envelope 'should include' it unconditionally"
@@ -1083,8 +1081,7 @@ def then_no_errors_field(ctx: dict) -> None:
     Step text says 'NOT contain' — the field should be absent (None),
     not just empty. An empty list ``[]`` still means the field exists.
     """
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response"
+    resp = require_payload(ctx)
     # "NOT contain" means the key must be absent, not just None.
     # Use exclude_none=True (AdCP default) so errors=None is excluded from the dict.
     if hasattr(resp, "model_dump"):
@@ -1140,18 +1137,15 @@ def _submitted_wire_dict(ctx: dict) -> dict[str, Any]:
     through the production serializer — the same path that produces wire bytes for
     the other transports. A real-wire transport that did NOT stash wire_response is
     a loud failure, not a silent fallback to the typed model (which would let the
-    UpdateMediaBuySubmitted assertions pass vacuously). Mirrors
-    tests/bdd/steps/domain/uc005_format_id_shape.py::_serialized_formats.
-    """
-    from tests.harness.transport import Transport
+    UpdateMediaBuySubmitted assertions pass vacuously).
 
-    wire = ctx.get("wire_response")
-    transport = ctx.get("transport")
-    if wire is None and transport not in (None, Transport.IMPL):
-        raise AssertionError(f"{transport}: wire_response missing — env does not stash success-path wire")
-    if wire is not None:
-        return wire
-    return _require_response(ctx).model_dump(mode="json")
+    Delegates to the shared ``wire_dict``: this used to be a third verbatim copy
+    of the same wire-presence predicate, which is how one copy would keep keying
+    on transport identity after the others stopped.
+    """
+    from tests.bdd.steps._outcome_helpers import wire_dict
+
+    return wire_dict(ctx)
 
 
 @then("the response should contain a task_id")
@@ -1211,7 +1205,7 @@ def then_response_not_contain_field(ctx: dict, field_name: str) -> None:
     contract violation. This is the Core Invariant / Design-Refinement Q5.
     """
     # Success-path response — assert against the buyer-facing serialized wire.
-    response = ctx.get("response")
+    response = payload_or_none(ctx)
     if response is not None:
         data = _submitted_wire_dict(ctx)
         assert data.get(field_name) is None, (
@@ -2329,3 +2323,100 @@ def _ensure_update_defaults(ctx: dict) -> dict[str, Any]:
             "media_buy_id": mb.media_buy_id,
         }
     return ctx["update_kwargs"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# BR-RULE-215: revision as the buyer's optimistic-concurrency token
+# ═══════════════════════════════════════════════════════════════════════
+# These four steps wake the two revision scenarios, which had no step definitions
+# at all — the reason they sat dormant behind the UC-003 harness xfail. The
+# obligation they carry is the one the whole revision surface rests on: a mutating
+# update advances the token and REPORTS the advanced value, so a buyer can take it
+# from the response and hand it straight back on the next call.
+
+
+@given(parsers.parse('the media buy "{label}" is at revision {revision:d}'))
+def given_media_buy_at_revision(ctx: dict, label: str, revision: int) -> None:
+    """Put the persisted row at *revision*, then prove it took.
+
+    Written through the repository''s own column rather than a factory rebuild, so the
+    scenario starts from a row the update path will really read. The read-back is not
+    ceremony: seeding a distinctive value is what separates "reports the post-write
+    value" from "reports a plausible constant", and a seed that silently did not land
+    would turn the whole scenario green for the wrong reason.
+    """
+    from sqlalchemy import update as sa_update
+
+    from src.core.database.models import MediaBuy
+
+    env = ctx["env"]
+    real_id = _resolve_media_buy_id(ctx, label)
+    session = env._session  # noqa: SLF001 — the harness's session seam, as used above
+    session.execute(sa_update(MediaBuy).where(MediaBuy.media_buy_id == real_id).values(revision=revision))
+    session.commit()
+
+    seeded = session.get(MediaBuy, real_id)
+    session.refresh(seeded)
+    assert seeded.revision == revision, (
+        f"seeding media buy {label!r} to revision {revision} did not take (column reads "
+        f"{seeded.revision!r}); every assertion below would grade the wrong starting point"
+    )
+    ctx.setdefault("seeded_revisions", {})[label] = revision
+
+
+@given("the request revision is set to <not provided>")
+def given_request_revision_absent(ctx: dict) -> None:
+    """Send NO revision — the last-write-wins path the spec makes optional.
+
+    Exact text rather than the `{revision:d}` parser above, because the Examples row
+    carries the literal `<not provided>` and an int parser cannot match it. Without
+    this the row failed on StepDefinitionNotFoundError and the suite's non-strict
+    auto-xfail absorbed it, so a row grading LWW read as dormant-for-some-reason.
+    Leaving `revision` out of the kwargs IS the assertion: the request must go without
+    a token, not with a null one.
+    """
+    _ensure_update_defaults(ctx)
+
+
+@given(parsers.parse("the request revision is set to {revision:d}"))
+def given_request_revision(ctx: dict, revision: int) -> None:
+    """Send *revision* as the buyer''s expected-current token on the update request."""
+    kwargs = _ensure_update_defaults(ctx)
+    kwargs["revision"] = revision
+
+
+@then(parsers.parse("the response should contain a revision with value {expected:d}"))
+def then_response_revision_value(ctx: dict, expected: int) -> None:
+    """Assert the WIRE revision is the post-write value.
+
+    Read off the wire rather than the typed payload, because the regression this
+    guards is a producer reporting a value it never read — a schema default reaching
+    the buyer looks identical in a typed object and is only visible in what was sent.
+    """
+    from tests.bdd.steps._outcome_helpers import wire_dict
+
+    actual = wire_dict(ctx).get("revision")
+    assert actual == expected, (
+        f"expected the update response to carry revision {expected} (the value AFTER this "
+        f"write — spec 3.1.1 update-media-buy-response.json: 'Revision number after this "
+        f"update'), got {actual!r}"
+    )
+
+
+@then("the response should contain a valid_actions array")
+def then_response_valid_actions_array(ctx: dict) -> None:
+    """Assert valid_actions is present AND non-empty on the wire.
+
+    Presence alone would pass on an empty list, which is what a non-AdCP status string
+    produces — the exact defect valid_actions derivation exists to prevent. INT-002:
+    the buyer plans its next call from this array without a get_media_buys round-trip,
+    and an empty array tells it there is nothing it may do.
+    """
+    from tests.bdd.steps._outcome_helpers import wire_dict
+
+    actions = wire_dict(ctx).get("valid_actions")
+    assert isinstance(actions, list), f"valid_actions must be an array on the wire, got {actions!r}"
+    assert actions, (
+        "valid_actions is empty; a buyer reads it to plan its next call, and an empty "
+        "array is what an unnormalized status string yields"
+    )

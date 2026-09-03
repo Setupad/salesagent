@@ -7,19 +7,20 @@ Steps dispatch a full create_media_buy through the wire transport
 (MediaBuyCreateEnv); production resolves the account at the transport boundary
 and emits the outcome on the wire (#1417).
 
-beads: salesagent-2rq, salesagent-zh85
 """
 
 from __future__ import annotations
 
 import uuid
+from functools import lru_cache
 from typing import Any
 from unittest.mock import ANY
 
 from pytest_bdd import given, parsers, then, when
 
 from tests.bdd.steps._harness_db import db_session as _db_session
-from tests.bdd.steps._outcome_helpers import _get_response_field
+from tests.bdd.steps._outcome_helpers import _get_response_field, payload_or_none, require_payload
+from tests.bdd.steps.generic._create_request import build_create_request_kwargs
 from tests.factories.account import AccountFactory, AgentAccountAccessFactory
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -848,7 +849,7 @@ def then_result_should_be(ctx: dict, outcome: str) -> None:
         # Bare success outcome (e.g. UC-003 targeting-overlay "Valid partitions"):
         # the operation proceeded without error and produced a response.
         assert "error" not in ctx, f"Expected success but got error: {ctx.get('error')}"
-        assert ctx.get("response") is not None, "Expected a response for success outcome but ctx['response'] is None"
+        assert payload_or_none(ctx) is not None, "Expected a response for success outcome but ctx['response'] is None"
     elif outcome.startswith("account resolution succeeds"):
         _assert_account_resolution_succeeds(ctx)
     elif outcome.startswith("error"):
@@ -882,8 +883,7 @@ def then_resolved_account_is_accessible(ctx: dict) -> None:
     accessible = ctx.get("accessible_account_ids")
     assert accessible, "given_natural_key_partial_access must record ctx['accessible_account_ids']"
 
-    resp = ctx.get("response")
-    assert resp is not None, f"Expected a create success response, got error: {ctx.get('error')}"
+    resp = require_payload(ctx)
     media_buy_id = _get_response_field(resp, "media_buy_id")
     assert media_buy_id, f"Expected a media_buy_id in the create response, got: {resp!r}"
 
@@ -909,8 +909,7 @@ def _assert_account_resolution_succeeds(ctx: dict) -> None:
     no longer exists on this path).
     """
     assert "error" not in ctx, f"Expected account resolution to succeed but got error: {ctx.get('error')}"
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a create_media_buy success response, but ctx['response'] is None"
+    resp = require_payload(ctx)
 
     from tests.bdd.steps._outcome_helpers import _get_response_field
 
@@ -1021,8 +1020,7 @@ def _assert_validation_pass(ctx: dict, outcome: str) -> None:
     """
     domain = _extract_validation_domain(outcome)
     assert "error" not in ctx, f"Expected '{domain}' validation to pass but got error: {ctx.get('error')}"
-    resp = ctx.get("response")
-    assert resp is not None, f"Expected response for '{domain}' validation pass but ctx['response'] is None"
+    resp = require_payload(ctx)
     if isinstance(resp, str):
         assert len(resp) > 0, f"Expected non-empty account_id for '{domain}' validation pass, got empty string"
         # Verify the resolved account_id matches the Given step's account_ref
@@ -1066,10 +1064,7 @@ def _assert_pipeline_routing(ctx: dict, outcome: str) -> None:
     assert "error" not in ctx, (
         f"Expected request to route to '{expected_pipeline}' pipeline but got error: {ctx.get('error')}"
     )
-    resp = ctx.get("response")
-    assert resp is not None, (
-        f"Expected response for pipeline routing to '{expected_pipeline}' but ctx['response'] is None"
-    )
+    resp = require_payload(ctx)
     dispatched = ctx.get("dispatched_pipeline")
     if dispatched is None:
         pytest.xfail(
@@ -1093,8 +1088,7 @@ def _assert_workflow_outcome(ctx: dict, outcome: str) -> None:
     'manual approval required' -- request was routed to pending_approval state.
     """
     assert "error" not in ctx, f"Expected workflow outcome '{outcome}' but got error: {ctx.get('error')}"
-    resp = ctx.get("response")
-    assert resp is not None, f"Expected response for workflow outcome '{outcome}' but ctx['response'] is None"
+    resp = require_payload(ctx)
     from tests.bdd.steps._outcome_helpers import _get_response_field
 
     if outcome == "auto-approved path taken":
@@ -1121,8 +1115,7 @@ def _assert_persistence_outcome(ctx: dict, outcome: str) -> None:
         return
 
     assert "error" not in ctx, f"Expected '{outcome}' but got error: {ctx.get('error')}"
-    resp = ctx.get("response")
-    assert resp is not None, f"Expected response for '{outcome}' but ctx['response'] is None"
+    resp = require_payload(ctx)
     from tests.bdd.steps._outcome_helpers import _get_response_field
 
     media_buy_id = _get_response_field(resp, "media_buy_id")
@@ -1135,8 +1128,7 @@ def _assert_persistence_outcome(ctx: dict, outcome: str) -> None:
 def _extract_tasks_from_response(ctx: dict, outcome: str) -> list:
     """Extract the tasks list from the response, asserting it exists."""
     assert "error" not in ctx, f"Expected task list outcome '{outcome}' but got error: {ctx.get('error')}"
-    resp = ctx.get("response")
-    assert resp is not None, f"Expected response for task list outcome '{outcome}' but ctx['response'] is None"
+    resp = require_payload(ctx)
     tasks = None
     if isinstance(resp, dict):
         tasks = resp.get("tasks") or resp.get("items") or resp.get("results")
@@ -1284,6 +1276,18 @@ def _assert_task_list_outcome(ctx: dict, outcome: str) -> None:
                 )
 
 
+@lru_cache(maxsize=1)
+def _pinned_error_codes() -> frozenset[str]:
+    """Every error code the pinned AdCP enum declares.
+
+    Read from the pin rather than hand-listed so a spec bump cannot leave this
+    check describing a vocabulary the suite no longer grades against.
+    """
+    from tests.helpers.pinned_schema import load
+
+    return frozenset(load("enums/error-code.json").get("enum") or ())
+
+
 def _assert_error_outcome(ctx: dict, outcome: str) -> None:
     """Assert error outcome with exact code, recovery, and message matching.
 
@@ -1326,12 +1330,21 @@ def _assert_error_outcome(ctx: dict, outcome: str) -> None:
         assert error.suggestion, f"Expected top-level suggestion on the error, got: {error.suggestion!r}"
         return
 
-    # Check if first word is a structured error code (UPPER_CASE with _).
+    # Check if first word is a structured error code.
     # Strip surrounding quotes: the partition/boundary outlines write the code
     # quoted (e.g. error "INVALID_REQUEST" with suggestion).
+    #
+    # Membership in the PINNED enum, not "UPPER_CASE containing an underscore".
+    # That shape heuristic silently misread every single-word code as free-text
+    # prose and fell through to the message-contains branch below, so the row
+    # compared the buyer's error MESSAGE against the literal outcome string and
+    # could never pass however correct production was. Exactly one pinned code
+    # has no underscore — CONFLICT — and it is the one the optimistic-concurrency
+    # obligation (#1607) rests on, so the heuristic broke precisely the rows that
+    # needed it. Asking the pin is an observation; counting underscores was a guess.
     parts = remainder.split()
     first_word = parts[0].strip('"') if parts else ""
-    is_structured = bool(first_word) and first_word == first_word.upper() and "_" in first_word
+    is_structured = bool(first_word) and (first_word in _pinned_error_codes() or "_" in first_word)
 
     if is_structured:
         expected_code = first_word
@@ -1490,50 +1503,19 @@ def given_tenant_auto_approval(ctx: dict) -> None:
 # then dispatch a full create_media_buy through the parametrized transport.
 
 
-def _idempotency_pricing_option_id(pricing_option) -> str:
-    """Synthetic pricing_option_id string from a PricingOption ORM row.
-
-    Matches the production/`given_media_buy` convention
-    ``{pricing_model}_{currency_lower}_{fixed|auction}``.
-    """
-    fixed_str = "fixed" if pricing_option.is_fixed else "auction"
-    return f"{pricing_option.pricing_model}_{pricing_option.currency.lower()}_{fixed_str}"
-
-
 def _build_idempotency_request_kwargs(ctx: dict) -> dict:
     """Assemble a valid create_media_buy request dict against the seeded product.
 
     Stored on ctx["request_kwargs"]; the When step and the "already created"
     Given step dispatch THIS exact dict (copied) so the canonical payload hash
     matches between the original create and the replay.
-    """
-    from datetime import UTC, datetime, timedelta
 
-    product = ctx["default_product"]
-    pricing_option = ctx["default_pricing_option"]
-    now = datetime.now(UTC)
-    ctx["request_kwargs"] = {
-        "brand": {"domain": "testbrand.com"},
-        # Explicit, stable po_number so the canonical payload is byte-identical
-        # between the original create and the replay across ALL transports. The
-        # A2A wrapper no longer mints a random po_number when the caller omits
-        # one (it stays None for idempotency-hash + cross-transport parity), so
-        # this value is set explicitly here to keep the canonical payload —
-        # and therefore the idempotency hash — identical between the original
-        # create and the replay. A real buyer replaying an idempotent request
-        # resends their own po_number.
-        "po_number": "PO-IDEMPOTENCY-REPLAY-001",
-        "start_time": (now + timedelta(days=1)).isoformat(),
-        "end_time": (now + timedelta(days=30)).isoformat(),
-        "packages": [
-            {
-                "product_id": product.product_id,
-                "budget": 5000.0,
-                "pricing_option_id": _idempotency_pricing_option_id(pricing_option),
-            }
-        ],
-    }
-    return ctx["request_kwargs"]
+    The explicit, stable po_number is what keeps the canonical payload — and
+    therefore the idempotency hash — byte-identical between the original create
+    and the replay across ALL transports. A real buyer replaying an idempotent
+    request resends their own po_number.
+    """
+    return build_create_request_kwargs(ctx, po_number="PO-IDEMPOTENCY-REPLAY-001")
 
 
 @given(parsers.parse('a valid create_media_buy request with idempotency_key "{key}"'))
@@ -1582,7 +1564,9 @@ def given_media_buy_already_created_same_key(ctx: dict) -> None:
     dispatch_request(first_ctx, **dict(ctx["request_kwargs"]))
 
     assert "error" not in first_ctx, f"First create_media_buy (idempotency seed) failed: {first_ctx.get('error')!r}"
-    first_resp = first_ctx.get("response")
+    # first_ctx is a SEPARATE dispatch context (the idempotency seed), so its
+    # payload is read from that ctx, not the scenario's.
+    first_resp = require_payload(first_ctx)
     media_buy_id = _get_response_field(first_resp, "media_buy_id")
     assert media_buy_id, f"First create produced no media_buy_id; response={first_resp!r}"
 
@@ -1693,15 +1677,14 @@ def when_send_second_request(ctx: dict) -> None:
 def then_response_should_succeed(ctx: dict) -> None:
     """Assert the response indicates success (no error)."""
     assert "error" not in ctx, f"Expected success but got error: {ctx.get('error')}"
-    assert "response" in ctx, "No response recorded in ctx"
+    require_payload(ctx)  # raises with a diagnostic if the dispatch produced none
 
 
 @then("the budget validation should pass")
 def then_budget_validation_passes(ctx: dict) -> None:
     """Assert budget validation passed -- no error, response has media_buy_id."""
     assert "error" not in ctx, f"Expected budget validation to pass but got error: {ctx.get('error')}"
-    resp = ctx.get("response")
-    assert resp is not None, "Expected a response but none found (budget validation may have failed silently)"
+    resp = require_payload(ctx)
     media_buy_id = _get_response_field(resp, "media_buy_id")
     assert media_buy_id, "Expected media_buy_id in response -- budget validation passed but no media buy created"
 
@@ -1709,8 +1692,7 @@ def then_budget_validation_passes(ctx: dict) -> None:
 @then(parsers.parse('the response should include a "{field}"'))
 def then_response_includes_field(ctx: dict, field: str) -> None:
     """Assert the response includes the specified field."""
-    response = ctx.get("response")
-    assert response is not None, "No response in ctx"
+    response = require_payload(ctx)
     if hasattr(response, field):
         assert getattr(response, field) is not None, f"Response field '{field}' is None"
     elif isinstance(response, dict):
@@ -1775,8 +1757,7 @@ def then_dual_emit_media_buy_status(ctx: dict) -> None:
 @then(parsers.parse('I remember the "{field}" as "{alias}"'))
 def then_remember_field(ctx: dict, field: str, alias: str) -> None:
     """Remember a response field value for later comparison."""
-    response = ctx.get("response")
-    assert response is not None, "No response to remember from"
+    response = require_payload(ctx)
     if hasattr(response, field):
         value = getattr(response, field)
     elif isinstance(response, dict):
@@ -1791,8 +1772,7 @@ def then_remember_field(ctx: dict, field: str, alias: str) -> None:
 @then(parsers.parse('the response "{field}" should equal the remembered "{alias}"'))
 def then_response_equals_remembered(ctx: dict, field: str, alias: str) -> None:
     """Assert a response field equals a previously remembered value."""
-    response = ctx.get("response")
-    assert response is not None, "No response in ctx"
+    response = require_payload(ctx)
     remembered = ctx.get("remembered", {})
     assert alias in remembered, f"No remembered value for '{alias}'"
 
@@ -1812,8 +1792,7 @@ def then_response_equals_remembered(ctx: dict, field: str, alias: str) -> None:
 @then(parsers.parse('the response "{field}" should NOT equal the remembered "{alias}"'))
 def then_response_not_equals_remembered(ctx: dict, field: str, alias: str) -> None:
     """Assert a response field does NOT equal a previously remembered value."""
-    response = ctx.get("response")
-    assert response is not None, "No response in ctx"
+    response = require_payload(ctx)
     remembered = ctx.get("remembered", {})
     assert alias in remembered, f"No remembered value for '{alias}'"
 
@@ -1842,8 +1821,7 @@ def then_response_includes_previously_created(ctx: dict, field: str) -> None:
        this is what production injects on a verbatim cache hit, surfaced on
        every transport by the harness response reconstruction.
     """
-    resp = ctx.get("response")
-    assert resp is not None, "No response in ctx — replay scenario produced nothing"
+    resp = require_payload(ctx)
     original = ctx.get("first_media_buy_id")
     assert original is not None, (
         "No first_media_buy_id recorded — the 'already created' Given step must run before this assertion"
@@ -1902,8 +1880,7 @@ def _get_error_message_for_step(error: object) -> str:
 @then(parsers.parse('I remember the ad server order name as "{alias}"'))
 def then_remember_order_name(ctx: dict, alias: str) -> None:
     """Remember the ad server order name for later comparison."""
-    response = ctx.get("response")
-    assert response is not None, "No response in ctx"
+    response = require_payload(ctx)
     # Order name is typically in the adapter call args or response metadata
     order_name = ctx.get("last_order_name")
     assert order_name is not None, "No order name recorded — harness must capture it"
@@ -1932,7 +1909,7 @@ def then_order_name_no_substring(ctx: dict, substring: str) -> None:
 def then_order_name_contains_media_buy_id(ctx: dict) -> None:
     """Assert the order name contains the media_buy_id from the create response."""
     order_name = ctx.get("last_order_name")
-    response = ctx.get("response")
+    response = payload_or_none(ctx)
     assert order_name is not None, "No order name recorded"
     assert response is not None, "No response in ctx"
     media_buy_id = getattr(response, "media_buy_id", None)
@@ -1975,7 +1952,7 @@ def then_webhook_notification(ctx: dict) -> None:
       B. step.request_data carries push_notification_config URL -- required for
          _send_push_notifications to actually POST. The BDD reject path uses
          repository methods that bypass the admin flow which populates this field.
-         FIXME(salesagent-9vgz.1): Wire through the production admin approve/reject
+         FIXME: Wire through the production admin approve/reject
          flow, then remove the xfail.
     """
     import pytest
@@ -1986,7 +1963,7 @@ def then_webhook_notification(ctx: dict) -> None:
     from src.core.database.repositories.workflow import WorkflowRepository
 
     # --- Extract media_buy_id and tenant ---
-    resp = ctx.get("response")
+    resp = payload_or_none(ctx)
     existing_mb = ctx.get("existing_media_buy")
     assert resp is not None or existing_mb is not None, (
         "No response or existing media buy in ctx — nothing to notify the Buyer about"
@@ -2112,7 +2089,7 @@ def then_webhook_notification(ctx: dict) -> None:
         # SPEC-PRODUCTION GAP: the repository-driven reject path does NOT populate
         # step.request_data with push_notification_config because it bypasses the
         # Flask admin flow that writes the original request payload onto the step.
-        # FIXME(salesagent-9vgz.1): wire through the production admin approve/reject
+        # FIXME(#2132): wire through the production admin approve/reject
         # flow which populates request_data, then remove this xfail.
         req_data = step.request_data or {}
         step_push_cfg = req_data.get("push_notification_config") if isinstance(req_data, dict) else None
@@ -2121,7 +2098,7 @@ def then_webhook_notification(ctx: dict) -> None:
                 "SPEC-PRODUCTION GAP: step.request_data does not carry "
                 "push_notification_config with the buyer's URL — "
                 "_send_push_notifications would skip dispatch. "
-                "FIXME(salesagent-9vgz.1): wire through the admin flow."
+                "FIXME: wire through the admin flow."
             )
 
         # Happy path (reached when harness wires the full admin flow):
@@ -2172,7 +2149,7 @@ def then_slack_notification_sent(ctx: dict) -> None:
         # A SUBMITTED (pending-approval) response carries no media_buy_id on the
         # wire (spec 3.1.1 CreateMediaBuySubmitted) — locate the persisted row
         # via the workflow mapping's tenant instead of the response body.
-        resp = ctx.get("response")
+        resp = payload_or_none(ctx)
         if resp is not None and _get_response_field(resp, "media_buy_id") is None:
             from src.core.database.models import MediaBuy as DBMediaBuy
 
@@ -2207,7 +2184,7 @@ def then_slack_notification_sent(ctx: dict) -> None:
     # Buyer-facing events (rejected, approved, status_changed) must never be
     # sent to the Seller's Slack channel.
     seller_event_types = ("approval_required", "created", "config_approval_required")
-    resp = ctx.get("response")
+    resp = payload_or_none(ctx)
     expected_mb_id = _get_response_field(resp, "media_buy_id") if resp is not None else None
     tenant = ctx.get("tenant")
     expected_tenant_name = getattr(tenant, "name", None) if tenant is not None else None
@@ -2230,4 +2207,86 @@ def then_slack_notification_sent(ctx: dict) -> None:
         ),
         tenant_id=ANY,
         success=True,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# v3.1 sync-success envelope: revision, confirmed_at, valid_actions
+# ═══════════════════════════════════════════════════════════════════════
+# Authored to wake @T-UC-002-v31-success-revision-and-actions, which had no step
+# definitions and so sat behind the UC-002 harness xfail. It grades the three v3.1
+# fields on the arm the buyer meets first — the same three the create response used
+# to fabricate from schema defaults rather than read from the persisted row.
+
+
+@then(parsers.parse('the response should include "{field}" as an ISO 8601 timestamp'))
+def then_response_field_is_iso8601(ctx: dict, field: str) -> None:
+    """Assert the WIRE field parses as an ISO 8601 instant carrying an offset.
+
+    Both halves matter: that it serialized as a string at all (a raw datetime object
+    reaching a JSON document is a real failure mode for a hand-built payload), and
+    that parsing yields an AWARE datetime — a timestamp without an offset denotes a
+    different instant for every reader.
+    """
+    from datetime import datetime
+
+    from tests.bdd.steps._outcome_helpers import wire_dict
+
+    value = wire_dict(ctx).get(field)
+    assert isinstance(value, str), f"{field} must be an ISO 8601 STRING on the wire, got {value!r}"
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None, f"{field} carries no timezone designator: {value!r}"
+
+
+@then(parsers.parse('the response should include "{field}" with an integer value of at least {minimum:d}'))
+def then_response_field_integer_at_least(ctx: dict, field: str, minimum: int) -> None:
+    """Assert the WIRE field is an integer at or above *minimum*.
+
+    ``_is_wire_integer`` rather than ``isinstance(int)``: A2A frames its DataPart as a
+    protobuf Struct whose only numeric kind is a double, so a legal revision arrives
+    as ``1.0`` there and ``1`` on MCP. A value that is not integral at all is itself a
+    violation and is reported as one rather than quietly coerced.
+    """
+    from tests.bdd.steps._outcome_helpers import wire_dict
+
+    value = wire_dict(ctx).get(field)
+    assert value is not None, f"{field} is absent from the wire response"
+    assert isinstance(value, int | float) and float(value).is_integer(), (
+        f"{field} must be an integer on the wire, got {value!r}"
+    )
+    assert int(value) >= minimum, f"{field} must be at least {minimum} per the pinned schema, got {value!r}"
+
+
+@then(parsers.parse('the response should include a "{field}" array'))
+def then_response_field_is_array(ctx: dict, field: str) -> None:
+    """Assert the WIRE field is a NON-EMPTY array.
+
+    Emptiness is the failure this guards. An empty ``valid_actions`` is exactly what a
+    status the derivation does not recognise produces, and it tells the buyer there is
+    nothing it may do next — so "present" is not the obligation, "populated" is.
+    """
+    from tests.bdd.steps._outcome_helpers import wire_dict
+
+    value = wire_dict(ctx).get(field)
+    assert isinstance(value, list), f"{field} must be an array on the wire, got {value!r}"
+    assert value, f"{field} is empty; the buyer plans its next call from it"
+
+
+@then("every value in valid_actions should be a member of the media-buy-valid-action enum")
+def then_valid_actions_are_enum_members(ctx: dict) -> None:
+    """Assert every emitted action is a member of the PINNED enum.
+
+    Read from the pinned schema rather than a literal list restated here: a list in
+    the test would let a pin bump widen the enum without anyone noticing, and would
+    let a typo'd action pass by matching the typo.
+    """
+    from tests.bdd.steps._outcome_helpers import wire_dict
+    from tests.helpers import pinned_schema
+
+    enum_members = set(pinned_schema.load_canonicalized("enums/media-buy-valid-action.json")["enum"])
+    actions = wire_dict(ctx).get("valid_actions") or []
+    unknown = [a for a in actions if a not in enum_members]
+    assert not unknown, (
+        f"valid_actions carries {unknown!r}, which the pinned media-buy-valid-action enum does not "
+        f"define (legal: {sorted(enum_members)})"
     )

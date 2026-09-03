@@ -10,7 +10,6 @@ Handles account management per AdCP spec (UC-011):
 - delete_missing (BR-RULE-061)
 - dry_run (BR-RULE-062)
 
-beads: salesagent-hl0, salesagent-619
 """
 
 import base64
@@ -436,7 +435,6 @@ def _extract_natural_key(entry: Any) -> tuple[str, str | None, str, bool | None]
         raise AdCPValidationError(
             "Each account entry must include 'brand', 'operator', and 'billing'; "
             "the account-reference (settings-update) form is not supported by this seller.",
-            recovery="correctable",
         )
     brand_domain = brand.domain
     brand_id = None

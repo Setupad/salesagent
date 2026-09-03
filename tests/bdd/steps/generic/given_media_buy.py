@@ -16,12 +16,17 @@ from typing import Any
 
 from pytest_bdd import given, parsers
 
+from tests.bdd.steps.generic._create_request import (
+    build_create_request_kwargs,
+    pricing_option_id,
+)
 from tests.factories import (
     CurrencyLimitFactory,
     PricingOptionFactory,
     ProductFactory,
 )
 from tests.helpers.adcp_factories import valid_reporting_webhook
+from tests.helpers.egress_hatches import UNDIALLED_PUBLIC_HTTPS_ORIGIN
 
 # Gherkin date token resolver — single source for all BDD step files.
 # Matches {now}, {N days from now}, {N days ago}.
@@ -49,41 +54,66 @@ def _resolve_date_token(value: str, clock: Any) -> str:
     return clock.now_iso()
 
 
-def _pricing_option_id(po: Any) -> str:
-    """Build the synthetic pricing_option_id string from a PricingOption ORM model."""
-    fixed_str = "fixed" if po.is_fixed else "auction"
-    return f"{po.pricing_model}_{po.currency.lower()}_{fixed_str}"
-
-
 def _future(days: int = 1) -> datetime:
     """Return a timezone-aware datetime N days in the future."""
     return datetime.now(UTC) + timedelta(days=days)
 
 
 def _ensure_request_defaults(ctx: dict) -> dict[str, Any]:
-    """Ensure ctx['request_kwargs'] has valid defaults for a create_media_buy request."""
+    """Ensure ctx['request_kwargs'] has valid defaults for a create_media_buy request.
+
+    The base dict comes from ``build_create_request_kwargs`` — one request literal for
+    the whole suite. Three things stay HERE because they are this caller's semantics,
+    not the builder's:
+
+    * the if-absent guard. ``ctx["request_kwargs"]`` is an accumulator that every
+      Given mutates, and the builder assigns unconditionally, so calling it on an
+      already-populated ctx would discard earlier steps' work.
+    * the product/pricing fallback. Steps run against a ctx with no seeded product,
+      where the builder's direct ``ctx["default_product"]`` lookup would raise; the
+      values are resolved here and passed in.
+    * the idempotency key, below.
+    """
     if "request_kwargs" not in ctx:
         product = ctx.get("default_product")
         pricing_option = ctx.get("default_pricing_option")
-        product_id = product.product_id if product else "guaranteed_display"
-        pricing_option_id = _pricing_option_id(pricing_option) if pricing_option else "cpm_usd_fixed"
-        ctx["request_kwargs"] = {
-            "brand": {"domain": "testbrand.com"},
-            "start_time": _future(1).isoformat(),
-            "end_time": _future(30).isoformat(),
-            "packages": [
-                {
-                    "product_id": product_id,
-                    "budget": 5000.0,
-                    "pricing_option_id": pricing_option_id,
-                }
-            ],
-        }
+        build_create_request_kwargs(
+            ctx,
+            product_id=product.product_id if product else "guaranteed_display",
+            pricing_option=pricing_option_id(pricing_option) if pricing_option else "cpm_usd_fixed",
+        )
     # idempotency_key is REQUIRED on CreateMediaBuyRequest (AdCP 3.0.1). Default a
     # per-scenario-unique key so scenarios not exercising idempotency stay valid —
     # a reused key would replay the original response instead of creating a buy.
+    #
+    # This is ONE of two deliberately different minting policies and must not be
+    # collapsed with the other: this key is stable for the whole scenario, so UC-002's
+    # replay scenarios dispatch the same request twice and hit the idempotency cache,
+    # whereas ``media_buy_create._ensure_idempotency_key`` mints a FRESH key per call
+    # so ordinary dispatches create independent buys. Merging them would either make
+    # every scenario replay or stop the replay scenarios replaying.
     ctx["request_kwargs"].setdefault("idempotency_key", f"bdd-key-{uuid.uuid4().hex}")
     return ctx["request_kwargs"]
+
+
+def harness_create_request_kwargs(ctx: dict) -> dict[str, Any]:
+    """Request kwargs for a create dispatched from a harness-seeded scenario.
+
+    ``_ensure_request_defaults`` only reads ``default_product`` /
+    ``default_pricing_option`` when it FIRST builds ``request_kwargs``; a
+    scenario whose Given steps created ``request_kwargs`` earlier (before the
+    UC-004 create arm seeded the harness data) would dispatch against the
+    placeholder ids. Re-pinning the package to the harness product here is what
+    both create-dispatching When steps share instead of each carrying a copy.
+    """
+    kwargs = _ensure_request_defaults(ctx)
+    product = ctx.get("default_product")
+    pricing_option = ctx.get("default_pricing_option")
+    if product is not None:
+        kwargs["packages"][0]["product_id"] = product.product_id
+    if pricing_option is not None:
+        kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(pricing_option)
+    return kwargs
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -513,7 +543,7 @@ def given_product_minimum_spend(ctx: dict, amount: int, currency: str) -> None:
     CurrencyLimit, not per product. This step uses CurrencyLimit as the
     mechanism. When per-product minimums are implemented, update this step.
 
-    FIXME(salesagent-9vgz.1): Per-product minimum spend not yet implemented.
+    FIXME: Per-product minimum spend not yet implemented.
     """
     import pytest
 
@@ -522,7 +552,7 @@ def given_product_minimum_spend(ctx: dict, amount: int, currency: str) -> None:
     pytest.xfail(
         f"SPEC-PRODUCTION GAP: Per-product minimum spend ({amount} {currency}) "
         "not yet implemented. Production uses CurrencyLimit.min_package_budget "
-        "for all products in a tenant. FIXME(salesagent-9vgz.1)"
+        "for all products in a tenant. FIXME"
     )
 
 
@@ -552,12 +582,12 @@ def given_request_2_packages(ctx: dict) -> None:
         {
             "product_id": ctx["default_product"].product_id,
             "budget": 5000.0,
-            "pricing_option_id": _pricing_option_id(ctx["default_pricing_option"]),
+            "pricing_option_id": pricing_option_id(ctx["default_pricing_option"]),
         },
         {
             "product_id": product2.product_id,
             "budget": 3000.0,
-            "pricing_option_id": _pricing_option_id(po2),
+            "pricing_option_id": pricing_option_id(po2),
         },
     ]
 
@@ -593,7 +623,7 @@ def given_packages_same_currency(ctx: dict, currency: str) -> None:
         is_fixed=True,
     )
     env._commit_factory_data()
-    new_po_id = _pricing_option_id(po)
+    new_po_id = pricing_option_id(po)
     # Update ALL packages to use this pricing option
     for pkg in kwargs.get("packages", []):
         pkg["pricing_option_id"] = new_po_id
@@ -636,7 +666,7 @@ def given_packages_valid_pricing(ctx: dict) -> None:
                     product_id=product_id,
                 )
             ).all()
-            known_po_ids = {_pricing_option_id(p) for p in po}
+            known_po_ids = {pricing_option_id(p) for p in po}
             assert po_id in known_po_ids, (
                 f"Package {i} pricing_option_id '{po_id}' not found among product "
                 f"'{product_id}' pricing options: {known_po_ids}. "
@@ -667,12 +697,12 @@ def given_request_2_packages_simple(ctx: dict) -> None:
         {
             "product_id": ctx["default_product"].product_id,
             "budget": 5000.0,
-            "pricing_option_id": _pricing_option_id(ctx["default_pricing_option"]),
+            "pricing_option_id": pricing_option_id(ctx["default_pricing_option"]),
         },
         {
             "product_id": product2.product_id,
             "budget": 3000.0,
-            "pricing_option_id": _pricing_option_id(po2),
+            "pricing_option_id": pricing_option_id(po2),
         },
     ]
 
@@ -786,7 +816,7 @@ def given_unsupported_currency(ctx: dict, currency: str) -> None:
     )
     env._commit_factory_data()
     if kwargs.get("packages"):
-        kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(po)
+        kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(po)
 
 
 @given(parsers.parse('both packages reference the same product_id "{product_id}"'))
@@ -912,7 +942,7 @@ def given_auction_no_bid_price(ctx: dict) -> None:
         "No packages in request — step claims 'a package selects an auction pricing "
         "option but provides no bid_price' but no package exists to set it on"
     )
-    kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(auction_po)
+    kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(auction_po)
     kwargs["packages"][0].pop("bid_price", None)
 
 
@@ -933,7 +963,7 @@ def given_bid_below_floor(ctx: dict, bid: float, floor: float) -> None:
     assert kwargs.get("packages"), (
         "No packages in request — step claims 'a package has bid_price' but no package exists to set it on"
     )
-    kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(auction_po)
+    kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(auction_po)
     kwargs["packages"][0]["bid_price"] = bid
 
 
@@ -960,7 +990,7 @@ def given_fixed_price_only(ctx: dict) -> None:
         "No packages in request — step claims 'a package pricing option has fixed_price' "
         "but no package exists to verify"
     )
-    expected_po_id = _pricing_option_id(po)
+    expected_po_id = pricing_option_id(po)
     actual_po_id = kwargs["packages"][0].get("pricing_option_id")
     assert actual_po_id == expected_po_id, (
         f"Package pricing_option_id '{actual_po_id}' does not reference the fixed "
@@ -985,7 +1015,7 @@ def given_floor_price_only(ctx: dict) -> None:
     assert kwargs.get("packages"), (
         "No packages in request — step claims 'a package pricing option' but no package exists to associate it with"
     )
-    kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(auction_po)
+    kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(auction_po)
 
 
 @given("the package has a bid_price above the floor")
@@ -1061,7 +1091,7 @@ def _setup_fixed_pricing(ctx: dict, rate: float = 5.00) -> None:
             env._commit_factory_data()
             kwargs = _ensure_request_defaults(ctx)
             assert kwargs.get("packages"), "No packages in request — cannot assign fixed pricing option"
-            kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(new_po)
+            kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(new_po)
         return
     # Default PO is not fixed — create a new fixed one
     env = ctx["env"]
@@ -1075,7 +1105,7 @@ def _setup_fixed_pricing(ctx: dict, rate: float = 5.00) -> None:
     env._commit_factory_data()
     kwargs = _ensure_request_defaults(ctx)
     assert kwargs.get("packages"), "No packages in request — cannot assign fixed pricing option"
-    kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(new_po)
+    kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(new_po)
 
 
 def _setup_auction_pricing(ctx: dict, floor: float = 2.0, bid: float = 5.0) -> None:
@@ -1091,7 +1121,7 @@ def _setup_auction_pricing(ctx: dict, floor: float = 2.0, bid: float = 5.0) -> N
     env._commit_factory_data()
     kwargs = _ensure_request_defaults(ctx)
     assert kwargs.get("packages"), "No packages in request — cannot assign auction pricing option"
-    kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(auction_po)
+    kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(auction_po)
     kwargs["packages"][0]["bid_price"] = bid
 
 
@@ -1114,7 +1144,7 @@ def _setup_both_pricing(ctx: dict, rate: float = 5.00, floor: float = 2.0) -> No
     env._commit_factory_data()
     kwargs = _ensure_request_defaults(ctx)
     assert kwargs.get("packages"), "No packages in request — cannot assign both-set pricing option"
-    kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(malformed_po)
+    kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(malformed_po)
 
 
 def _setup_neither_pricing(ctx: dict) -> None:
@@ -1162,7 +1192,7 @@ def given_pricing_option_configuration(ctx: dict, config: str) -> None:
         assert kwargs.get("packages"), (
             "No packages in request — pricing option configuration 'cpa_model' requires at least one package"
         )
-        kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(cpa_po)
+        kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(cpa_po)
 
     elif config in ("both_set", "fixed+floor"):
         _setup_both_pricing(ctx)
@@ -1219,7 +1249,7 @@ def _setup_multi_package_request(ctx: dict, currencies: list[str]) -> None:
             {
                 "product_id": product.product_id,
                 "budget": 5000.0,
-                "pricing_option_id": _pricing_option_id(po),
+                "pricing_option_id": pricing_option_id(po),
             }
         )
 
@@ -1263,7 +1293,7 @@ def given_currency_scenario(ctx: dict, partition: str) -> None:
         assert kwargs.get("packages"), (
             "No packages in request — currency_in_tenant_table partition requires packages to assign EUR PO"
         )
-        kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(po_eur)
+        kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(po_eur)
 
     elif partition == "mixed_currencies":
         # 2 packages with different currencies — production derives currency from
@@ -1285,7 +1315,7 @@ def given_currency_scenario(ctx: dict, partition: str) -> None:
         assert kwargs.get("packages"), (
             "No packages in request — currency_not_in_tenant partition requires packages to assign XYZ PO"
         )
-        kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(po_xyz)
+        kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(po_xyz)
 
     else:
         raise ValueError(f"Unknown currency partition: {partition}")
@@ -1325,7 +1355,7 @@ def given_currency_configuration(ctx: dict, config: str) -> None:
         )
         env._commit_factory_data()
         assert kwargs.get("packages"), "No packages in request — '1 pkg XYZ' config requires packages to assign XYZ PO"
-        kwargs["packages"][0]["pricing_option_id"] = _pricing_option_id(po_xyz)
+        kwargs["packages"][0]["pricing_option_id"] = pricing_option_id(po_xyz)
 
     else:
         raise ValueError(f"Unknown currency boundary config: {config}")
@@ -1375,7 +1405,7 @@ def _setup_multi_product_request(ctx: dict, product_ids: list[str]) -> None:
             {
                 "product_id": product.product_id,
                 "budget": 5000.0,
-                "pricing_option_id": _pricing_option_id(po),
+                "pricing_option_id": pricing_option_id(po),
             }
         )
 
@@ -2348,7 +2378,7 @@ def given_ad_server_rejects_creative_upload(ctx: dict) -> None:
     # position. Burying it in details={"suggestion": ...} yields a non-conformant wire
     # error (empty top-level suggestion). The e2e sibling below keeps error_details;
     # mock_ad_server pops it back to first-class.
-    mock_adapter.add_creative_assets.side_effect = AdCPAdapterError(message, recovery=recovery, suggestion=suggestion)
+    mock_adapter.add_creative_assets.side_effect = AdCPAdapterError(message, suggestion=suggestion)
     # E2E path: write the failure to the adapter test-behavior config so the
     # Docker-hosted adapter raises the same error on creative upload
     # (MockAdServer.add_creative_assets reads the fail_on_upload flag).
@@ -2779,7 +2809,7 @@ def given_proposal_not_exists(ctx: dict, proposal_id: str) -> None:
     accepted but never validated. This step cannot establish the claimed
     precondition, so the scenario is xfailed.
 
-    FIXME(salesagent-9vgz.1): When production implements proposal storage, this step must:
+    FIXME: When production implements proposal storage, this step must:
     1. Verify no proposal record exists for this ID, OR
     2. Create an expired proposal record to test the expiry path
     Then remove the xfail.
@@ -2791,7 +2821,7 @@ def given_proposal_not_exists(ctx: dict, proposal_id: str) -> None:
     pytest.xfail(
         "SPEC-PRODUCTION GAP: Production has no proposal store — cannot establish "
         f"'proposal \"{proposal_id}\" does not exist or has expired' precondition. "
-        "FIXME(salesagent-9vgz.1)"
+        "FIXME"
     )
 
 
@@ -2803,7 +2833,7 @@ def given_proposal_budget_guidance_min(ctx: dict, amount: int) -> None:
     SPEC-PRODUCTION GAP: Production has no proposal budget guidance.
     This step cannot configure the claimed precondition, so the scenario is xfailed.
 
-    FIXME(salesagent-9vgz.1): When production implements proposal budget guidance, this step must:
+    FIXME: When production implements proposal budget guidance, this step must:
     1. Configure the proposal record with total_budget_guidance.min = amount
     2. Verify the proposal exists in ctx before setting guidance
     Then remove the xfail.
@@ -2814,7 +2844,7 @@ def given_proposal_budget_guidance_min(ctx: dict, amount: int) -> None:
     ctx["expected_budget_guidance_min"] = amount
     pytest.xfail(
         "SPEC-PRODUCTION GAP: Production has no proposal budget guidance — cannot establish "
-        f"'total_budget_guidance.min is {amount}' precondition. FIXME(salesagent-9vgz.1)"
+        f"'total_budget_guidance.min is {amount}' precondition. FIXME"
     )
 
 
@@ -2836,9 +2866,10 @@ def given_adapter_error(ctx: dict) -> None:
 
     env = ctx["env"]
     mock_adapter = env.mock["adapter"].return_value
+    # See the sibling above on "retryable": not a pinned classification.
+    # SERVICE_UNAVAILABLE derives transient, which is the intent here.
     error = AdCPAdapterError(
         "Ad server unavailable",
-        recovery="retryable",
         details={"suggestion": "Retry the operation or contact ad server support"},
     )
     mock_adapter.create_media_buy.side_effect = error
@@ -2853,7 +2884,11 @@ def given_adapter_error(ctx: dict) -> None:
         fail_on_update=True,
         error_message="Ad server unavailable",
         error_details={"suggestion": "Retry the operation or contact ad server support"},
-        recovery="retryable",
+        # The DB-injected value reaches the DOCKER-hosted MockAdServer, which now maps
+        # it to an exception class; "retryable" is not a pinned classification and
+        # would trip the loud-raise branch, handing e2e a CONFIGURATION_ERROR/terminal
+        # for what this scenario means as a transient adapter outage.
+        recovery="transient",
     )
     # Ensure tenant is auto-approval so production code doesn't short-circuit
     _seed_auto_approval(ctx, sync_adapter=False)
@@ -3241,7 +3276,10 @@ def given_webhook_configured(ctx: dict) -> None:
     Stores both the config in ctx (Given→Then contract) and wires it into
     request_kwargs so production receives it when the media buy is created.
     """
-    webhook_url = "https://buyer.example.com/webhooks/adcp-notifications"
+    # Must pass ingest egress policy under every hatch posture (validate_url
+    # runs inside _create_media_buy_impl): https public-unicast IP literal, no
+    # DNS dependency. Never fetched by these scenarios.
+    webhook_url = f"{UNDIALLED_PUBLIC_HTTPS_ORIGIN}/webhooks/adcp-notifications"
     push_config = {"url": webhook_url, "events": ["status_change"]}
     ctx["push_notification_config"] = push_config
     # Also wire into request_kwargs if they exist (for create requests)

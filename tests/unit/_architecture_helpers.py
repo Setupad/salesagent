@@ -20,6 +20,7 @@ import functools
 import os
 import re
 import subprocess
+import sys
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -43,8 +44,18 @@ SCAN_DIRS = [REPO_ROOT / "src/core/tools", REPO_ROOT / "src/adapters"]
 
 
 def rel(path: Path) -> str:
-    """Return path relative to repo root for stable allowlist keys."""
-    return str(path.relative_to(REPO_ROOT))
+    """Return path relative to repo root for stable allowlist keys.
+
+    A path outside the repo root has no stable key to give, so it returns its
+    own absolute form rather than raising: every real caller scans repo paths,
+    and the only out-of-root callers are tests driving a scanner over a tmp
+    tree, where crashing on the key would mean the rule cannot be tested
+    independently of whatever the repo happens to contain.
+    """
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def safe_parse(filepath: Path) -> ast.Module | None:
@@ -58,16 +69,24 @@ def safe_parse(filepath: Path) -> ast.Module | None:
 
 
 def iter_module_trees(scan_dirs: list[Path]) -> Iterator[tuple[ast.Module, str]]:
-    """Yield ``(parsed_tree, repo_relative_path)`` for parseable ``.py`` under ``scan_dirs``."""
+    """Yield ``(parsed_tree, repo_relative_path)`` for every ``.py`` under ``scan_dirs``.
+
+    Parses through :func:`parse_module`, so the mtime-keyed cache is shared with
+    every other guard rather than re-parsing the tree per guard, and so an
+    UNPARSEABLE file raises instead of being silently skipped. The previous
+    ``safe_parse`` form swallowed ``SyntaxError`` and dropped the file, which
+    means a guard would have reported "no violations" on a source tree it could
+    not read — a quiet failure, and the one kind of green this corpus must never
+    produce. Measured when this changed: 297 ``.py`` under ``src/``, none
+    unparseable, so the scan set moved for no existing caller.
+    """
     for scan_dir in scan_dirs:
         if not scan_dir.exists():
             continue
         for py_file in sorted(scan_dir.rglob("*.py")):
             if "__pycache__" in str(py_file):
                 continue
-            tree = safe_parse(py_file)
-            if tree is not None:
-                yield tree, rel(py_file)
+            yield parse_module(py_file), rel(py_file)
 
 
 def walk_with_enclosing_function(tree: ast.AST) -> Iterator[tuple[ast.AST, str]]:
@@ -165,6 +184,174 @@ def find_plain_json_column_violations(tree: ast.Module) -> list[int]:
         if uses_plain_json:
             lines.append(call.lineno)
     return lines
+
+
+_FS_MUTATING_CALLS: frozenset[str] = frozenset(
+    {
+        "mkdir",
+        "makedirs",
+        "touch",
+        "open",
+        "write_text",
+        "write_bytes",
+        "unlink",
+        "rmtree",
+        "remove",
+        "rename",
+        "replace",
+        "copy",
+        "copyfile",
+        "chmod",
+        "symlink_to",
+        "FileHandler",
+        "RotatingFileHandler",
+        "TimedRotatingFileHandler",
+        "WatchedFileHandler",
+        "NamedTemporaryFile",
+        "mkstemp",
+        "mkdtemp",
+    }
+)
+
+
+def _is_main_guard(node: ast.AST) -> bool:
+    """True for ``if __name__ == "__main__":`` — a block that never runs on import.
+
+    Both operand orders, and ``==``/``!=`` distinguished: ``if __name__ !=
+    "__main__":`` DOES run on import and must not be treated as a script guard.
+    """
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    if not isinstance(test, ast.Compare) or len(test.comparators) != 1 or len(test.ops) != 1:
+        return False
+    if not isinstance(test.ops[0], ast.Eq):
+        return False
+    left, right = test.left, test.comparators[0]
+    for name_node, const_node in ((left, right), (right, left)):
+        if (
+            isinstance(name_node, ast.Name)
+            and name_node.id == "__name__"
+            and isinstance(const_node, ast.Constant)
+            and const_node.value == "__main__"
+        ):
+            return True
+    return False
+
+
+# Statement fields whose contents execute in the ENCLOSING scope at import time.
+# ``ast.Match`` keeps its arms under ``cases``, not ``body``.
+_IMPORT_TIME_BODY_FIELDS = ("body", "orelse", "finalbody", "handlers", "cases")
+
+
+def iter_import_time_statements(tree: ast.Module) -> Iterator[ast.stmt]:
+    """Yield statements that EXECUTE when the module is imported.
+
+    Descends through module-level control flow (if/try/with/for/match) because
+    those bodies do run on import, and INTO class bodies, which run on import
+    too -- a class-level ``handler = logging.FileHandler(...)`` is exactly the
+    defect this exists to catch, and skipping ``ClassDef`` made it invisible.
+
+    Function bodies are deferred to call time and are not yielded. Their
+    ``decorator_list`` and default arguments are, because both are evaluated at
+    ``def`` time -- i.e. at import.
+    """
+    stack: list[ast.stmt] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if _is_main_guard(node):
+            continue
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            # The `def` statement itself runs at import: decorators are called
+            # and defaults are evaluated. The body is not. Yielding the node
+            # would drag the body in via `iter_statement_scoped_nodes`, so hand
+            # back only the two parts that execute, wrapped as expressions.
+            yield from _synthetic_expressions(node.decorator_list)
+            yield from _synthetic_expressions(_default_expressions(node))
+            continue
+        yield node
+        if isinstance(node, ast.ClassDef):
+            # A class body executes at import; its decorators do too.
+            yield from _synthetic_expressions(node.decorator_list)
+        for field in _IMPORT_TIME_BODY_FIELDS:
+            stack.extend(getattr(node, field, []) or [])
+
+
+def _default_expressions(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
+    """Default-argument expressions, which are evaluated once at ``def`` time."""
+    args = node.args
+    return [d for d in (*args.defaults, *args.kw_defaults) if d is not None]
+
+
+def _synthetic_expressions(exprs: list[ast.expr]) -> Iterator[ast.stmt]:
+    """Wrap bare expressions as ``Expr`` statements so callers can treat them alike."""
+    for expr in exprs:
+        stmt = ast.Expr(value=expr)
+        stmt.lineno = expr.lineno
+        stmt.col_offset = expr.col_offset
+        yield stmt
+
+
+# Expression nodes whose contents are DEFERRED, not run where they are written.
+# A `lambda: os.makedirs(...)` or a generator expression at module level builds
+# an object; nothing inside it has run yet.
+_DEFERRED_EXPR_NODES = (ast.Lambda, ast.GeneratorExp)
+
+
+def iter_statement_scoped_nodes(stmt: ast.stmt) -> Iterator[ast.AST]:
+    """Yield the nodes of *stmt* WITHOUT descending into nested statements.
+
+    ``ast.walk`` on a compound statement swallows its whole body, which silently
+    unions everything a function does into one "statement". Callers want the
+    header only -- ``If.test``, ``Return.value``, the right-hand side of an
+    assignment.
+
+    Lambda bodies and generator expressions are not descended into either: they
+    are built where they are written but executed somewhere else, so treating
+    them as part of the statement reports a call that has not happened.
+    """
+    stack: list[ast.AST] = [stmt]
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, _DEFERRED_EXPR_NODES):
+            continue
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, ast.stmt):
+                stack.append(child)
+
+
+def call_callee_name(call: ast.Call) -> str | None:
+    """The bare name being called: ``x.foo()`` -> ``"foo"``, ``foo()`` -> ``"foo"``.
+
+    ``None`` for a callee that is neither -- a subscript, a call result, a
+    lambda. The canonical form: this idiom was hand-rolled at 15 sites across
+    13 files in three mutually inconsistent spellings, none of which R0801 sees
+    (they are 1-3 line clones, under `min-similarity-lines=6`). Migrating the
+    other sites is tracked separately.
+    """
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def find_import_time_fs_io_violations(tree: ast.Module) -> list[int]:
+    """Return line numbers of filesystem I/O performed at MODULE IMPORT time.
+
+    Import-time filesystem I/O makes a module's importability depend on the
+    working directory and uid of whoever imports it -- neither of which the
+    module chooses. It once took out every pytest suite at COLLECTION when two
+    containers sharing a bind mount raced to create ``logs/audit.log``.
+    """
+    lines: list[int] = []
+    for stmt in iter_import_time_statements(tree):
+        for node in iter_statement_scoped_nodes(stmt):
+            if isinstance(node, ast.Call) and call_callee_name(node) in _FS_MUTATING_CALLS:
+                lines.append(node.lineno)
+    return sorted(lines)
 
 
 def iter_call_expressions(tree: ast.AST, name: str | None = None) -> Iterator[ast.Call]:
@@ -942,3 +1129,181 @@ def format_failure(
     if docs_link:
         parts.extend(["", f"See: {docs_link}"])
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# BDD collection helper (e2e_rest transport fitness)
+# ---------------------------------------------------------------------------
+
+
+def collect_bdd_node_ids_with_e2e_enabled(target: str, *, timeout: int = 300) -> list[str]:
+    """Collect pytest node ids under *target* with BDD_E2E_ENABLED=true.
+
+    Shared by the e2e_rest known-failures ledger fitness function and any
+    test asserting a specific scenario's transport parametrization —
+    same subprocess invocation, same env, same flags (-n0 satisfies the
+    BDD_E2E_ENABLED xdist guard; addopts is cleared so -q prints bare
+    nodeids).
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            target,
+            "--collect-only",
+            "-q",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:randomly",
+            "-n0",
+        ],
+        cwd=repo_root(),
+        env={**os.environ, "BDD_E2E_ENABLED": "true", "BDD_XDIST_N": "0"},
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    assert proc.returncode == 0, f"{target} collection failed (rc={proc.returncode}):\n{proc.stderr[-2000:]}"
+    return [line.strip() for line in proc.stdout.splitlines() if "::" in line]
+
+
+def scan_src(
+    detector: Callable[[ast.Module], list[int]],
+    *,
+    exempt: frozenset[str] = frozenset(),
+    skip_prefixes: tuple[str, ...] = (),
+    scan_dirs: list[Path] | None = None,
+) -> dict[str, list[int]]:
+    """Run *detector* over ``src/``, returning ``{repo_relative_path: [line, ...]}``.
+
+    The one walk every src-scanning guard needs, so a guard supplies only what
+    it detects. Files with no findings are omitted; keys are :func:`rel` spelling
+    (``str(path.relative_to(REPO_ROOT))``), and every suppression constant must
+    be written in that same spelling.
+
+    Suppression has two axes, and they are NOT the same rule:
+
+    ``exempt`` is a per-file SANCTIONED VIOLATION — "this file does the thing,
+    and that is allowed". Every entry must actually be flagged by the detector,
+    or it is a dead exemption and this function RAISES. A dead entry is worse
+    than no entry: it reads as a considered decision while suppressing nothing,
+    and it silently pre-authorizes the violation if the file ever acquires one.
+
+    ``skip_prefixes`` is a SCOPE BOUNDARY — "this subtree is out of scope". Most
+    files under a boundary are legitimately clean, so requiring each to be
+    flagged would red the build on innocent files. The rule is weaker and
+    matches the intent: at least ONE file under the prefix must be flagged, or
+    the prefix is dead scope, and this function RAISES.
+
+    Both are raises rather than a sibling meta-test on purpose. A separate test
+    would DETECT a dead suppression; raising here makes one unwritable, which is
+    the difference between adding another check and removing the ability to make
+    the mistake.
+    """
+    root = REPO_ROOT / "src"
+    findings: dict[str, list[int]] = {}
+    suppressed_exempt: dict[str, list[int]] = {}
+    suppressed_prefix: dict[str, list[int]] = {}
+
+    for tree, rel_path in iter_module_trees(scan_dirs if scan_dirs is not None else [root]):
+        lines = detector(tree)
+        if not lines:
+            continue
+        if rel_path in exempt:
+            suppressed_exempt[rel_path] = lines
+        elif any(rel_path.startswith(prefix) for prefix in skip_prefixes):
+            suppressed_prefix[rel_path] = lines
+        else:
+            findings[rel_path] = lines
+
+    dead_exempt = sorted(exempt - set(suppressed_exempt))
+    if dead_exempt:
+        raise AssertionError(
+            f"dead exemption(s) {dead_exempt}: the detector finds nothing in these files, so the "
+            "entry suppresses nothing while reading as a sanctioned violation — and it would "
+            "silently pre-authorize one if the file ever acquired it. Delete the entry."
+        )
+
+    dead_prefixes = sorted(
+        prefix for prefix in skip_prefixes if not any(p.startswith(prefix) for p in suppressed_prefix)
+    )
+    if dead_prefixes:
+        raise AssertionError(
+            f"dead scope boundary/boundaries {dead_prefixes}: no file under this prefix is flagged "
+            "by the detector, so the skip excludes nothing today and would silently permit a "
+            "violation the moment one appears there. Delete the prefix."
+        )
+
+    return findings
+
+
+def assert_guard_subject_resolves(module_path: str, *names: str, why: str) -> None:
+    """Assert every one of *names* still exists in *module_path*.
+
+    A guard that scans for a symbol BY STRING keeps passing after that symbol is
+    renamed: it finds nothing, which is indistinguishable from finding nothing
+    wrong. Resolving the name here makes the rename fail loudly instead. Use
+    ``importlib`` rather than a module-level import so a heavy subject does not
+    abort collection for the whole unit run.
+
+    *why* states what goes unguarded if the name is gone, so the failure explains
+    the consequence rather than only the fact.
+    """
+    import importlib
+
+    module = importlib.import_module(module_path)
+    missing = sorted(n for n in names if not hasattr(module, n))
+    assert not missing, f"{missing} no longer exist(s) in {module_path}. {why}"
+
+
+def assert_guard_vocabulary_contains(mine: set[str], theirs: set[str], *, why: str) -> None:
+    """Assert the guard's own vocabulary (*mine*) is still covered by *theirs*.
+
+    Containment, deliberately not derivation: deriving the guard's vocabulary
+    FROM production would make it track whatever production says, which grades
+    nothing. Asserting containment catches production dropping a member the
+    guard was written to watch.
+    """
+    missing = sorted(mine - theirs)
+    assert not missing, f"{missing} no longer covered. {why}"
+
+
+# Every casing of a pinned auth scheme that a hand-written comparison might use.
+#
+# ONE copy, because two diverged. Each guard that cares about scheme literals had
+# its own set, and measured at the point of extraction the inline-resolution copy
+# was missing "BEARER" and "HMAC_SHA256" -- so an inline comparison against those
+# two spellings was invisible to it while the sibling guard recognised them. That
+# is CLAUDE.md's stated reason for the DRY invariant having already happened: the
+# next person fixing one copy missed the other.
+#
+# Deliberately NOT derived from the enum. The whole point is catching a WRONG
+# casing, so the variants are hand-held; a containment test asserts the pin's own
+# values are present, which is what catches a pin bump adding a scheme.
+SCHEME_LITERAL_CASINGS: frozenset[str] = frozenset(
+    {
+        "Bearer",
+        "bearer",
+        "BEARER",
+        "HMAC-SHA256",
+        "hmac-sha256",
+        "hmac_sha256",
+        "HMAC_SHA256",
+        "Basic",
+        "basic",
+    }
+)
+
+
+def assert_scanned_paths_exist(paths: Iterable[str], *, why: str) -> None:
+    """Assert every path a guard scans still exists.
+
+    A guard whose scan set names a file by path drains silently when that file is
+    renamed or deleted: it reads nothing, finds nothing, and reports clean. The
+    scan set is the guard's subject as much as any symbol is, and it has the same
+    failure mode -- absence is indistinguishable from compliance.
+    """
+    missing = sorted(p for p in paths if not (REPO_ROOT / p).exists())
+    assert not missing, f"scanned path(s) {missing} no longer exist. {why}"

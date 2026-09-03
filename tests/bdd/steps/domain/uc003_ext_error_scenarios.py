@@ -3,7 +3,6 @@
 Given steps set up error conditions (missing auth, wrong principal, bad budget,
 invalid creatives, etc.). Then steps assert error fields (recovery, suggestion).
 
-beads: salesagent-05b
 """
 
 from __future__ import annotations
@@ -51,7 +50,6 @@ def _inject_privilege_error(ctx: dict) -> None:
     error = AdCPError.synthesize(
         "This operation requires admin privileges",
         error_code="PERMISSION_DENIED",
-        recovery="correctable",
         details={"suggestion": "Request admin privileges or contact an administrator to perform this action"},
     )
     mock_adapter.update_media_buy.side_effect = error
@@ -70,11 +68,11 @@ def given_buyer_authenticated_as(ctx: dict, principal_id: str) -> None:
     identity post-condition to the shared ``authenticate_env_as`` helper; adds only
     the use-case-specific ``has_auth`` flag.
 
-    NOTE: this module is currently dormant (see ``steps/generic/_auth.py``) — it is
-    not registered in ``tests/bdd/conftest.py`` ``pytest_plugins`` and UC-003 is not
-    wired into the BDD harness, so these steps do not execute (UC-003 update
-    scenarios auto-xfail). Kept on the shared helper so it is correct when UC-003 is
-    activated.
+    NOTE: this module IS registered in ``tests/bdd/conftest.py`` ``pytest_plugins``
+    (conftest.py:63), so this registration is global — it is the definition every
+    feature gets for this sentence, not a dormant one. (A previous version of this
+    note claimed the opposite; UC-003's own update scenarios auto-xfail, which is a
+    separate fact and was mistaken for the step being unreachable.)
     """
     authenticate_env_as(ctx, principal_id)
     ctx["has_auth"] = True
@@ -680,7 +678,6 @@ def given_media_buy_uncancellable(ctx: dict) -> None:
     mock_adapter.update_media_buy.side_effect = AdCPError.synthesize(
         "Media buy cannot be canceled in its current state with committed delivery",
         error_code="NOT_CANCELLABLE",
-        recovery="correctable",
         details={"suggestion": "Pause the buy instead (paused: true) or contact the seller to arrange cancellation"},
     )
 
@@ -702,9 +699,12 @@ def given_adapter_error_during_update(ctx: dict) -> None:
 
     env = ctx["env"]
     mock_adapter = env.mock["adapter"].return_value
+    # "retryable" was never a recovery classification — the pinned vocabulary is
+    # transient / correctable / terminal — and it reached the wire verbatim because
+    # the kwarg was a free string. AdCPAdapterError's wire code SERVICE_UNAVAILABLE
+    # is pinned transient, which is what this scenario always meant.
     error = AdCPAdapterError(
         message="Ad server returned error during update",
-        recovery="retryable",
         details={"suggestion": "Retry the operation or contact ad server support"},
     )
     # Inject into all adapter methods that update_media_buy_impl might call.
@@ -802,7 +802,18 @@ def then_error_recovery_field(ctx: dict, value: str) -> None:
     from src.core.exceptions import AdCPError
 
     if isinstance(error, AdCPError):
-        assert error.recovery == value, f"Expected recovery '{value}', got '{error.recovery}'"
+        # Same reasoning as then_error.py's terminal-recovery step: the
+        # reconstruction derives its own recovery, so grading it against itself is
+        # a tautology. Read the wire where the transport captured one; IMPL has
+        # none and keeps the class check.
+        from tests.bdd.steps.generic.then_error import _wire_error_object
+
+        wire = _wire_error_object(ctx)
+        if wire is not None:
+            actual_wire = wire.get("recovery")
+            assert actual_wire == value, f"Expected recovery {value!r} on the wire, got {actual_wire!r}: {wire}"
+        else:
+            assert error.recovery == value, f"Expected recovery '{value}', got '{error.recovery}'"
     elif hasattr(error, "recovery"):
         actual = error.recovery.value if hasattr(error.recovery, "value") else str(error.recovery)
         assert actual == value, f"Expected recovery '{value}', got '{actual}'"
@@ -885,7 +896,7 @@ def given_seller_minimum_budget(ctx: dict, amount: int, currency: str) -> None:
     This step stores the expected values in ctx so downstream Then steps
     can assert on error details shape when the gap is closed.
 
-    FIXME(salesagent-9vgz.1): Wire seller minimum budget to production
+    FIXME: Wire seller minimum budget to production
     validation and error details.
     """
     import pytest
@@ -895,7 +906,7 @@ def given_seller_minimum_budget(ctx: dict, amount: int, currency: str) -> None:
     pytest.xfail(
         f"SPEC-PRODUCTION GAP: Seller minimum budget ({amount} {currency}) "
         "not carried in production. v3.1 BUDGET_TOO_LOW error details "
-        "(minimum_budget, currency) not populated. FIXME(salesagent-9vgz.1)"
+        "(minimum_budget, currency) not populated. FIXME"
     )
 
 

@@ -195,7 +195,7 @@ async def _get_products_impl(
 
     # Enforce policy-based validation
     if brand_manifest_policy == "require_brand" and not offering:
-        raise AdCPAuthorizationError("Brand manifest required by tenant policy", recovery="correctable")
+        raise AdCPAuthorizationError("Brand manifest required by tenant policy")
     elif brand_manifest_policy == "require_auth" and not principal_id:
         raise AdCPAuthenticationError("Authentication required by tenant policy")
     # public policy allows all requests (no brand_manifest or auth required)
@@ -447,7 +447,7 @@ async def _get_products_impl(
         country_code = None  # TODO: Extract from targeting if provided
 
         with ProductUoW(tenant["tenant_id"]) as pricing_uow:
-            # FIXME(salesagent-9f2): DynamicPricingService needs a repository, not raw session
+            # FIXME(#1119): DynamicPricingService needs a repository, not raw session
             assert pricing_uow.session is not None
             pricing_service = DynamicPricingService(pricing_uow.session)
             products = pricing_service.enrich_products_with_pricing(

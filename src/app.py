@@ -97,14 +97,15 @@ async def app_lifespan(app: FastAPI):
     logger.info("FastAPI application starting up")
     yield
     logger.info("FastAPI application shutting down")
-    # Service-agnostic shutdown: every service that needs teardown
-    # self-registers an async close callback via
-    # ``src.core.lifecycle.register_shutdown`` at first construction. This
-    # lifespan only drains the registry — it never references a concrete
-    # service. Releases long-lived HTTP sessions / connection pools (e.g.
-    # the webhook service's ``requests.Session``) before process exit; that
-    # is leak triage item #3 from the production OOM-cycle investigation
-    # (GH #1264). Per-callback errors are logged and swallowed inside
+    # Service-agnostic shutdown: a service that needs teardown self-registers an
+    # async close callback via ``src.core.lifecycle.register_shutdown`` at first
+    # construction. This lifespan only drains the registry — it never references a
+    # concrete service, which is what lets producers come and go without touching
+    # it. The webhook service was the last producer and no longer has anything to
+    # close: each delivery now builds and discards a transport pinned to its own
+    # destination, so no pooled session survives a request (the leak this drained
+    # was item #3 of the production OOM-cycle investigation, GH #1264).
+    # Per-callback errors are logged and swallowed inside
     # ``run_all_shutdown_callbacks`` so they cannot mask the yielded exit.
     await run_all_shutdown_callbacks()
 
@@ -247,7 +248,7 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
     # malformed/unknown field (structural) is INVALID_REQUEST. The full
     # value-vs-structural reclassification across all fields is a repo-wide
     # follow-up; for now the attribution_window family — reconciled to
-    # VALIDATION_ERROR upstream in adcp-req — is mapped explicitly. (salesagent-meho)
+    # VALIDATION_ERROR upstream in adcp-req — is mapped explicitly.
     if field and field.startswith("attribution_window"):
         exc_cls, suggestion = AdCPValidationError, VALIDATION_ERROR_SUGGESTION
     else:

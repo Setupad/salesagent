@@ -34,7 +34,7 @@ This guide helps you work effectively with the Prebid Sales Agent codebase maint
 - If you are asked to refactor duplicated code, that is a **bug fix**, not an "improvement"
 - **NEVER** cite "avoid over-engineering" or "keep it simple" to justify leaving duplicated logic in place
 - Duplicated code is a defect. It means the next person who fixes a bug in one copy will miss the other copy. This is not theoretical — it has caused real bugs in this codebase
-- **Enforced by:** `check_code_duplication.py` pre-commit hook (pylint R0801, ratcheting baseline in `.duplication-baseline`)
+- **Enforced by:** `check_code_duplication.py` in `make quality` (pylint R0801, ratcheting baseline in `.duplication-baseline`)
 
 **How to apply DRY correctly:**
 ```python
@@ -86,25 +86,26 @@ AST-scanning tests enforce architecture invariants on every `make quality` run. 
 
 | Guard | Enforces | Test File |
 |-------|----------|-----------|
+| Schema inheritance | Redeclarations are inherited unless reshaped or weakened | `test_architecture_schema_inheritance.py` |
 | No ToolError in _impl | `_impl` raises AdCPError, never ToolError | `test_no_toolerror_in_impl.py` |
 | Transport-agnostic _impl | `_impl` has zero transport imports | `test_transport_agnostic_impl.py` |
 | ResolvedIdentity in _impl | `_impl` accepts ResolvedIdentity, not Context | `test_impl_resolved_identity.py` |
-| Schema inheritance | Schemas extend adcp library base types | `test_architecture_schema_inheritance.py` |
 | Boundary completeness | MCP/A2A wrappers pass all _impl parameters | `test_architecture_boundary_completeness.py` |
 | Query type safety | DB queries use types matching column definitions | `test_architecture_query_type_safety.py` |
 | No model_dump in _impl | `_impl` returns model objects, never calls `.model_dump()` | `test_architecture_no_model_dump_in_impl.py` |
 | No direct DB access | No `get_db_session()` or `session.add()` anywhere outside repositories/UoW/infrastructure | `test_architecture_repository_pattern.py` |
 | Migration completeness | Every migration has non-empty `upgrade()` and `downgrade()` | `test_architecture_migration_completeness.py` |
 | No raw MediaPackage select | All MediaPackage access goes through repository, not raw `select()` | `test_architecture_no_raw_media_package_select.py` |
+| No import-time filesystem I/O | `src/` and `scripts/` modules touch no files while being imported | `test_architecture_no_import_time_fs_io.py` |
 | No raw select outside repos | All ORM model queries go through repositories, not raw `select()` | `test_architecture_no_raw_select.py` |
-| Obligation coverage | Behavioral obligations in docs have matching test coverage | `test_architecture_obligation_coverage.py` |
+| No raw egress | All outbound HTTP goes through `src/core/security/outbound_http.py`, never raw `httpx`/`requests`/`urlopen`/`aiohttp` | `ruff-egress.toml` (TID251 over `src/` + `scripts/`, in `make quality-ci`) + `test_ruff_egress_bans.py` |
+| No destination rewrite | Nothing under `src/` rebuilds a URL or swaps its netloc/scheme ahead of the seam | `test_architecture_no_destination_rewrite.py` |
 | BDD no-op Then steps | Then steps must assert, not delegate to `_pending()`-like no-ops | `test_architecture_bdd_no_pass_steps.py` |
 | BDD trivial assertions | Then steps must compare values, not just check truthiness | `test_architecture_bdd_no_trivial_assertions.py` |
 | BDD no dict registry | Given steps must use factories, not raw dicts | `test_architecture_bdd_no_dict_registry.py` |
 | BDD no duplicate steps | No 3+ step functions with identical bodies | `test_architecture_bdd_no_duplicate_steps.py` |
 | BDD no silent env | No `ctx.get("env")` or `hasattr(env, ...)` in step functions | `test_architecture_bdd_no_silent_env.py` |
-| Obligation test quality | Obligation-tagged tests must CALL production code, not just import it | `test_architecture_obligation_test_quality.py` |
-| Code duplication (DRY) | Duplicate block count in src/ and tests/ cannot increase | `check_code_duplication.py` (pre-commit + make quality) |
+| Code duplication (DRY) | Duplicate block count in src/ and tests/ cannot increase | `check_code_duplication.py` (make quality) |
 | Workflow tenant isolation | WorkflowRepository queries join DBContext for tenant scoping | `test_architecture_workflow_tenant_isolation.py` |
 | No split mock assertions | Tests use `assert_called_once_with()`, not `assert_called_once()` + `call_args` | `test_architecture_weak_mock_assertions.py` |
 | Single migration head | Alembic migration graph has exactly one head | `test_architecture_single_migration_head.py` |
@@ -124,7 +125,7 @@ AST-scanning tests enforce architecture invariants on every `make quality` run. 
 
 ## AdCP Spec Version
 
-This project targets AdCP spec **3.1.0-beta.3** via the `adcp==5.7.0` Python SDK. See
+This project targets AdCP spec **3.1.1** via the `adcp==6.6.0` Python SDK. See
 [docs/adcp-spec-version.md](docs/adcp-spec-version.md) for the version mapping
 and bump procedure. The CI guard at `tests/unit/test_adcp_spec_version.py`
 fails on pin drift.
@@ -159,7 +160,24 @@ class Product(LibraryProduct):
 - Only redeclare parent fields when needed for nested serialization (Pattern #4)
 - Mark internal-only fields with `exclude=True`
 - Run `pytest tests/unit/test_adcp_contract.py` before commit
-- **Enforced by:** `test_architecture_schema_inheritance.py`
+- **Enforced by:** `tests/unit/test_pydantic_schema_alignment.py` — declared fields and
+  model_dump survival graded against the PINNED SCHEMA — and by
+  `tests/unit/test_architecture_schema_inheritance.py`, which grades redeclarations
+  against the library parent.
+- The inheritance guard was once deleted on the ground that such a guard "has to
+  enumerate how this repo spells its imports — every spelling it does not know is a
+  silent hole." The premise was true of the old implementation and is no longer true of
+  this one: the REDEFINITION rule decides membership by walking the live MRO and testing
+  `__module__`, so it consults no import spelling and has no spelling to miss. The
+  companion `test_all_library_types_have_local_subclass` is still alias-keyed, and is the
+  remaining place where a differently-spelled import goes unexamined.
+- A redeclaration needs an allowlist row unless it is **neither reshaped nor weakened**:
+  same annotation (or a subclass), nullability not added, `is_required()` not relaxed,
+  metadata a superset, no default introduced. A redeclaration that keeps the parent's
+  shape but is *weaker* — dropping a `Ge` or a `MinLen`, going required→optional — needs
+  a row NAMING the weakened axis. Do not widen the admission rule to make it pass: a
+  hand-written row names itself and can be audited, whereas a derived rule that admits a
+  widening is invisible and permanent.
 
 ### 2. Flask: Prevent Route Conflicts
 **Pre-commit hook detects duplicate routes** - Run manually: `uv run python .pre-commit-hooks/check_route_conflicts.py`
@@ -331,6 +349,37 @@ with get_db_session() as session:
   code must use factories regardless. The structural guard (`test_architecture_repository_pattern.py`)
   will catch new violations immediately at `make quality`. Pre-existing violations are allowlisted
   and tracked with FIXME comments — they shrink over time, never grow.
+
+### 9. Outbound HTTP: The Application Implements No SSRF Protection
+**Every outbound request goes through `src/core/security/outbound_http.py` (`send` / `asend`).**
+
+Do not add URL validation, private-IP checks, metadata blocklists, resolve-then-check, or
+redirect re-validation anywhere else — `adcp.signing` owns address validation and IP pinning,
+httpx owns the response state machine (including NOT following redirects). If you find yourself
+writing `ipaddress`, `socket.gethostbyname`, or a hostname blocklist in `src/`, stop: that logic
+is already owned elsewhere.
+
+**Why:** address, TLS, redirect and retry policy re-decided at each call site is exactly how SSRF
+kept recurring here (#1589) — one call site always forgets one of them. One seam, one decision.
+
+```python
+# CORRECT: the seam decides address, TLS, redirect and retry policy
+from src.core.security.outbound_http import asend
+
+result = await asend(url, json=payload)
+```
+
+```python
+# WRONG: raw client plus hand-rolled address policy at the call site
+import httpx, ipaddress, socket
+
+if ipaddress.ip_address(socket.gethostbyname(host)).is_private:  # TOCTOU, and not our job
+    raise ValueError("blocked")
+async with httpx.AsyncClient() as client:
+    await client.post(url, json=payload)
+```
+
+- **Enforced by:** `ruff-egress.toml` — src-scoped TID251 import bans run by `make quality-ci`; `tests/unit/test_ruff_egress_bans.py` proves every ban fires and every `# noqa: TID251` exemption is live, not prose; `tests/unit/test_architecture_no_destination_rewrite.py` keeps destinations unrewritten ahead of the seam
 
 ---
 
@@ -515,6 +564,32 @@ def test_something():
 - AdCP compliance test for all client-facing models
 - Test YOUR code, not Python built-ins
 - Roundtrip test required for any operation using `apply_testing_hooks()`
+- You are a lazy senior developer. Lazy means efficient, not careless. The best code is the code never written.
+
+Before writing any code, stop at the first rung that holds:
+
+Does this need to be built at all? (YAGNI)
+Does it already exist in this codebase? Reuse the helper, util, or pattern that's already here, don't re-write it.
+Does the standard library already do this? Use it.
+Does a native platform feature cover it? Use it.
+Does an already-installed dependency solve it? Use it.
+Can this be one line? Make it one line.
+Only then: write the minimum code that works.
+The ladder runs after you understand the problem, not instead of it: read the task and the code it touches, trace the real flow end to end, then climb.
+
+Bug fix = root cause, not symptom: a report names a symptom. Grep every caller of the function you touch and fix the shared function once — one guard there is a smaller diff than one per caller, and patching only the path the ticket names leaves a sibling caller still broken.
+
+Rules:
+
+No abstractions that weren't explicitly requested. Caveat: allow shared helpers and existing architecture abstractions.
+No new dependency if it can be avoided.
+No boilerplate nobody asked for.
+Deletion over addition. Boring over clever. Fewest files possible.
+Shortest working diff wins, but only once you understand the problem. The smallest change in the wrong place isn't lazy, it's a second bug.
+Question complex requests: "Do you actually need X, or does Y cover it?"
+Pick the edge-case-correct option when two stdlib approaches are the same size, lazy means less code, not the flimsier algorithm.
+Mark deliberate simplifications that cut a real corner with a known ceiling (global lock, O(n²) scan, naive heuristic): comment naming the ceiling and upgrade path.
+Not lazy about: understanding the problem (read it fully and trace the real flow before picking a rung, a small diff you don't understand is just laziness dressed up as efficiency), input validation at trust boundaries, error handling that prevents data loss, security, accessibility, the calibration real hardware needs (the platform is never the spec ideal, a clock drifts, a sensor reads off), anything explicitly requested. Lazy code without its check is unfinished: non-trivial logic leaves ONE runnable check behind, the smallest thing that fails if the logic breaks (an assert-based demo/self-check or one small test file; less frameworks, less fixtures). Trivial one-liners need no test.
 
 ### Test Integrity Policy — ZERO TOLERANCE
 
@@ -746,5 +821,38 @@ uvx adcp http://localhost:8000/mcp/ --auth <real-token> get_products '{"brief":"
 
 - Documentation: `/docs` directory
 - Test examples: `/tests` directory
+
+# Language and Register
+
+## Banned words/phrases (do not use, ever)
+"load-bearing," "hand-waving," "reflexive hedging," "honest framing,"
+"the unlock," "constellation," "oracle" (as metaphor), "surface area,"
+"north star," "the real question," "table stakes," "prose" (use "text"
+or "writing" instead).
+
+## Banned sentence patterns
+- Do NOT lead a sentence with what something is not before saying what
+  it is. Never write "It's not X. It's Y." — just write "It's Y" and
+  add the contrast only if it's genuinely needed.
+- Do NOT invent metaphors, aphorisms, or "strategic" framings on the
+  spot (e.g. "this is where a VP smells hand-waving"). If a metaphor
+  isn't already a well-known one, don't use it.
+- Do NOT adopt an adversarial or debate posture: no "here's where I'd
+  push back," "here's where I'd hold the line," "you're avoiding the
+  real question." Just state agreement or disagreement plainly.
+- Do NOT dress up uncertainty with elaborate hedging paragraphs. If
+  unsure, say "I'm not sure" once and move on.
+
+## Concision without cryptic density
+"Be concise" does not mean "compress into fewer, denser words." It
+means: cut sentences that don't add information. Keep normal sentence
+structure and common words. A concise answer should be easier to read
+fast, not harder.
+
+## Register
+Write like a plain technical answer — the register of a good Stack
+Overflow answer or internal doc, not a keynote or a LinkedIn post.
+No forced cleverness. If a plainer word exists, use it.
+
 - Adapter implementations: `/src/adapters` directory
 - Issues: File on GitHub repository

@@ -70,6 +70,10 @@ class GetProductsBody(SalesAgentBaseModel):
     # dict BrandReference or string domain/URL shorthand (#1324)
     brand: dict[str, Any] | str | None = None
     filters: dict[str, Any] | None = None
+    # Top-level property of get-products-request.json at AdCP 3.1.1. Omitting it
+    # made the field MCP+A2A-only, which is a protocol gap rather than a REST
+    # limitation.
+    property_list: dict[str, Any] | None = None
     adcp_version: str = "1.0.0"
 
 
@@ -114,6 +118,18 @@ class UpdateMediaBuyBody(SalesAgentBaseModel):
     reporting_webhook: dict[str, Any] | None = None
     ext: dict[str, Any] | None = None
     idempotency_key: str | None = None
+    # The buyer's expected-current optimistic-concurrency token. Declared because the
+    # pinned update-media-buy-request.json defines it ("Expected current revision for
+    # optimistic concurrency ... Obtain from get_media_buys or the most recent
+    # create/update response") and this model is extra="forbid" — so omitting it did
+    # not make the field optional over REST, it made a spec-legal request a hard
+    # INVALID_REQUEST. A buyer that read the token off a create/update response and
+    # handed it back, exactly as the spec instructs, was rejected for doing so.
+    #
+    # The seller does not yet ACT on it — the stale-token CONFLICT check is a separate,
+    # still-xfailed gap (BR-RULE-215 partitions). Accepting it is transport parity, not
+    # a claim that concurrency is enforced.
+    revision: int | None = None
     adcp_version: str = "1.0.0"
 
 
@@ -232,6 +248,7 @@ async def get_products(body: GetProductsBody, identity: ResolvedIdentity | None 
             brief=body.brief,
             brand=body.brand,
             filters=body.filters,
+            property_list=body.property_list,
         )
     response = await products_module._get_products_impl(req, identity)
     result = response.model_dump(mode="json")
@@ -239,7 +256,7 @@ async def get_products(body: GetProductsBody, identity: ResolvedIdentity | None 
 
 
 @router.get("/capabilities")
-async def get_capabilities(identity: ResolvedIdentity | None = resolve_auth):
+async def get_adcp_capabilities(identity: ResolvedIdentity | None = resolve_auth):
     """Get AdCP capabilities (auth-optional discovery skill)."""
     response = await capabilities_module.get_adcp_capabilities_raw(identity=identity)
     return response.model_dump(mode="json")
@@ -369,6 +386,7 @@ async def update_media_buy(media_buy_id: str, body: UpdateMediaBuyBody, identity
         reporting_webhook=reporting_webhook,
         ext=body.ext,
         idempotency_key=body.idempotency_key,
+        revision=body.revision,
         identity=identity,
     )
     return response.model_dump(mode="json")

@@ -12,7 +12,6 @@ claim.
 This test pins the corrected behavior: when the persisted creative is scoped to
 a DIFFERENT principal than the resolved one, the step MUST fail.
 
-beads: salesagent-txo1
 """
 
 from __future__ import annotations
@@ -45,7 +44,10 @@ def test_step_fails_when_creative_scoped_to_wrong_principal(integration_db):
         resp = SyncCreativesResponse(creatives=[SyncCreativeResult(creative_id="cr1", action="created")])
         ctx = {
             "env": env,
-            "response": resp,
+            # The payload key for a value produced WITHOUT dispatching — which is
+            # what this test does: it drives the step directly to exercise its
+            # principal-scoping logic, not a transport.
+            "self_dispatched_response": resp,
             "creatives": [{"creative_id": "cr1"}],
             "principal_id": expected.principal_id,
             "tenant_id": tenant.tenant_id,
@@ -73,7 +75,10 @@ def test_step_passes_when_creative_scoped_to_resolved_principal(integration_db):
         resp = SyncCreativesResponse(creatives=[SyncCreativeResult(creative_id="cr1", action="created")])
         ctx = {
             "env": env,
-            "response": resp,
+            # The payload key for a value produced WITHOUT dispatching — which is
+            # what this test does: it drives the step directly to exercise its
+            # principal-scoping logic, not a transport.
+            "self_dispatched_response": resp,
             "creatives": [{"creative_id": "cr1"}],
             "principal_id": resolved.principal_id,
             "tenant_id": tenant.tenant_id,

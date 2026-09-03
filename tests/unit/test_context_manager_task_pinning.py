@@ -2,7 +2,7 @@
 
 PR #1264 fix #6 pinned the fire-and-forget webhook task scheduled inside
 ``ContextManager._send_push_notifications`` against asyncio's weak-ref GC.
-salesagent-x2h.2 extracted that pin to the shared ``src.core.async_utils``
+ extracted that pin to the shared ``src.core.async_utils``
 helper, so the strong-ref set is now ``async_utils._pinned_tasks`` (per the
 x2h.5 Dependencies note: pin_task landed first → target the shared module).
 
@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.core import async_utils, context_manager
+from src.services.protocol_webhook_service import ProtocolWebhookService
 from tests.unit._push_notification_helpers import make_push_step, session_returning
 
 
@@ -47,13 +48,15 @@ def _drive(send_notification_side):
     controls when/how the scheduled coroutine completes. Returns nothing —
     callers inspect async_utils._pinned_tasks.
     """
-    mapping = SimpleNamespace(object_type="media_buy", object_id="mb_1", action="create")
-    context = SimpleNamespace(tenant_id="tenant_1", principal_id="principal_1")
     webhook = SimpleNamespace(id="pnc_1")
-    session = session_returning([mapping], context, [webhook])
+    session = session_returning([webhook])
 
-    fake_service = MagicMock()
-    fake_service.send_notification = AsyncMock(side_effect=send_notification_side)
+    # A REAL service with only the wire call stubbed. _send_push_notifications
+    # dispatches through notify() now (salesagent-pldmk.39); a MagicMock service
+    # returns a MagicMock from notify(), which asyncio refuses as a coroutine, so
+    # no task is ever created and these pinning assertions grade nothing.
+    fake_service = ProtocolWebhookService()
+    fake_service.send_notification = AsyncMock(side_effect=send_notification_side)  # type: ignore[method-assign]
 
     cm = context_manager.ContextManager()
     with patch.object(context_manager, "get_protocol_webhook_service", return_value=fake_service):

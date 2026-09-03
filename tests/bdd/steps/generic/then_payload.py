@@ -1,7 +1,7 @@
 """Then steps for payload and field assertions.
 
 Every assertion operates on real production response objects:
-    ctx["response"] -- ListCreativeFormatsResponse on success
+    the dispatch payload (require_payload) -- ListCreativeFormatsResponse on success
     ctx["error"] -- Exception on failure
 
 No stub mode. No dict intermediaries -- assertions access Format attributes directly.
@@ -15,7 +15,7 @@ from typing import Any
 
 from pytest_bdd import parsers, then
 
-from tests.bdd.steps._outcome_helpers import wire_field
+from tests.bdd.steps._outcome_helpers import payload_or_none, require_payload, wire_field
 
 # -- Helpers -------------------------------------------------------------------
 
@@ -28,7 +28,7 @@ def _is_e2e(ctx: dict) -> bool:
 
 def _get_formats(ctx: dict) -> list[Any]:
     """Extract formats list from response as real Format objects."""
-    resp = ctx.get("response")
+    resp = payload_or_none(ctx)
     if resp is None:
         return []
     if hasattr(resp, "formats"):
@@ -355,11 +355,7 @@ def _assert_partition_outcome(ctx: dict, field: str, expected: str) -> None:
     )
     if expected == "valid":
         assert "error" not in ctx, f"Expected valid filter result for '{field}' but got error: {ctx.get('error')}"
-        resp = ctx.get("response")
-        assert resp is not None, (
-            f"Expected response for '{field}' filter but ctx['response'] is absent -- "
-            "production did not produce a result"
-        )
+        resp = require_payload(ctx)
         # Access .formats directly -- AttributeError means the response is not
         # a ListCreativeFormatsResponse (stronger than hasattr which is always
         # True on Pydantic models).
@@ -370,9 +366,9 @@ def _assert_partition_outcome(ctx: dict, field: str, expected: str) -> None:
     elif expected == "invalid":
         assert "error" in ctx, (
             f"Expected '{field}' filter to be rejected as invalid, but operation "
-            f"succeeded with response: {ctx.get('response')!r}"
+            f"succeeded with response: {payload_or_none(ctx)!r}"
         )
-        resp = ctx.get("response")
+        resp = payload_or_none(ctx)
         assert resp is None, (
             f"Expected no response on invalid '{field}' filter, got both error "
             f"{ctx.get('error')!r} AND response {resp!r}"
@@ -646,7 +642,7 @@ def then_partition_filtering_result(ctx: dict, field: str, expected: str) -> Non
         _assert_filter_content(ctx, field, label="Filter")
 
 
-# Domain boundary handlers for then_boundary_handling_result (see salesagent-chit).
+# Domain boundary handlers for then_boundary_handling_result (see ).
 # Each handler takes (ctx, field, expected) and returns True if it handled the
 # field, else False. This lets a domain step module (e.g. uc004_delivery) own its
 # boundary-handling logic without the generic module importing domain code, while

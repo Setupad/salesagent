@@ -43,12 +43,23 @@ response).
 
 **Why steps live here (not in steps/domain/ + pytest_plugins):** pytest-bdd 8
 resolves step definitions only from the scenario's own module, conftest, or
-registered plugins — importing them does not register them. The generic
-``schema-valid against <file>`` and ``authenticated as principal`` phrasings are
-shared by other, already-wired feature files (UC-004/005/006); registering them
-globally would alter those suites. Defining the steps inline scopes them to this
-one scenario, keeping the blast radius to UC-018. The reusable, non-step schema
-validator lives in ``tests.helpers.pinned_schema``.
+registered plugins — importing them does not register them. So a step defined
+here is reachable only from this module's scenarios.
+
+Note what that is NOT a licence for. The generic ``schema-valid against <file>``
+and ``authenticated as principal`` phrasings are owned by
+``tests/bdd/steps/generic/``. Re-registering either sentence here would not
+"keep the blast radius small" — it would give one Gherkin sentence two meanings,
+with the local, usually weaker, definition silently winning for this file while
+every other suite kept the generic one. That is the defect
+``test_architecture_bdd_no_shadowed_steps.py`` now fails on, and it is exactly
+how UC-005 ended up grading ``isinstance(formats, list)`` under a sentence that
+promises full pinned-schema validation.
+
+A step belongs inline only when its SENTENCE is specific to this scenario. When
+the behaviour is genuinely UC-018-specific, give it its own wording rather than
+narrowing a shared one. The reusable, non-step schema validator lives in
+``tests.helpers.pinned_schema``.
 
 The "synced" creatives are seeded via ``CreativeFactory`` rather than a live
 ``sync_creatives`` call: ``CreativeListEnv`` mocks only the audit logger (it has
@@ -75,10 +86,8 @@ from typing import Any
 
 from pytest_bdd import given, parsers, scenarios, then, when
 
-from tests.bdd.steps._outcome_helpers import _require_response
+from tests.bdd.steps._outcome_helpers import require_payload, wire_dict
 from tests.bdd.steps.generic._auth import authenticate_env_as
-from tests.harness.transport import Transport
-from tests.helpers.pinned_schema import validate_against_pinned_schema
 
 # Three genuinely-different formats (display / video / audio) for the "three
 # different formats" precondition. All three are in the standard format registry:
@@ -156,20 +165,14 @@ def _get_or_create_tenant_and_principal(env: Any) -> tuple[Any, Any]:
     return tenant, principal
 
 
-@given(parsers.parse('the Buyer is authenticated as principal "{principal_id}"'))
-def given_buyer_authenticated_as_principal(ctx: dict, principal_id: str) -> None:
-    """Authenticate the listing buyer as *principal_id* (Background).
-
-    Uses the shared ``authenticate_env_as`` helper (which clears the identity cache and
-    switches the env's principal) so list_creatives is principal-scoped to this buyer,
-    and records the principal so the seed steps own their creatives under the same id
-    the query authenticates as (list_creatives is principal-scoped — a mismatch returns
-    an empty library).
-
-    The helper owns the switch, the canonical ``ctx["principal_id"]``, and the
-    identity post-condition.
-    """
-    authenticate_env_as(ctx, principal_id)
+# 'the Buyer is authenticated as principal "{principal_id}"' is NOT registered here.
+# This module used to declare it, which meant the sentence had two definitions — this
+# one and the identical parser in steps/domain/uc003_ext_error_scenarios.py (registered
+# globally via conftest pytest_plugins). UC-018 silently got the local one and every
+# other feature got the plugin one; the two bodies differed only by a ctx["has_auth"]
+# flag, so the divergence was invisible until someone diffed them. Deleted so the
+# sentence has one meaning. Both call the same authenticate_env_as helper, and the
+# extra has_auth flag is read only by a UC-003 step, so nothing here changes.
 
 
 @given("the buyer recently synced three creatives in three different formats via sync_creatives")
@@ -220,15 +223,9 @@ def _serialized_response(ctx: dict) -> dict[str, Any]:
     is not a valid array/object/boolean).
 
     The 4-transport parametrization still exercises each dispatch path end to end:
-    a broken transport surfaces as a missing/errored ``ctx["response"]`` here.
+    a broken transport surfaces as a missing/errored dispatch payload here.
     """
-    return _require_response(ctx).model_dump(mode="json", exclude_none=True)
-
-
-@then(parsers.parse("the response should be schema-valid against {schema_file}"))
-def then_response_schema_valid(ctx: dict, schema_file: str) -> None:
-    """Assert the serialized response validates against the pinned AdCP schema."""
-    validate_against_pinned_schema(schema_file, _serialized_response(ctx))
+    return require_payload(ctx).model_dump(mode="json", exclude_none=True)
 
 
 @then("the creatives array should include each of the synced creatives")
@@ -350,23 +347,15 @@ def when_list_creatives_concept_ids(ctx: dict, concept_list: str) -> None:
 def _wire_creatives(ctx: dict) -> list[dict[str, Any]]:
     """Return the creatives array as the buyer sees it on the wire.
 
-    REST/A2A/MCP stash the real serialized response on ``ctx["wire_response"]``
-    (CreativeListEnv stashes on all three wire transports), so the concept-field
-    assertions check the actual on-the-wire bytes rather than a re-serialization.
-    Falls back to the production serializer only when no wire was captured (e.g. a
-    non-stashing path), so the step still has data to assert on.
+    Delegates to the shared :func:`wire_dict`, which branches on the
+    DECLARATION the dispatcher made (``TransportResult.has_wire``) and raises
+    when a declared wire was not captured. This function used to key on
+    transport IDENTITY (``transport not in (None, Transport.IMPL)``), which is
+    the spelling `wire_dict` replaced across the suite: a lookup against an enum
+    member reclassifies every result the day that member moves, and it made this
+    the last site free to drift from the guard the others share.
     """
-    wire = ctx.get("wire_response")
-    transport = ctx.get("transport")
-    # Loud guard (mirrors uc005_format_id_shape): a real-wire transport (a2a/mcp/rest/
-    # e2e_rest) that didn't stash wire_response must trip here, not silently fall back
-    # to a model_dump re-serialization and undercut the "real wire bytes" claim. IMPL
-    # (and the unparametrized None default) legitimately have no wire.
-    if wire is None and transport not in (None, Transport.IMPL):
-        raise AssertionError(f"{transport}: wire_response missing — env does not stash success-path wire")
-    if wire is not None:
-        return wire["creatives"]
-    return _serialized_response(ctx)["creatives"]
+    return wire_dict(ctx)["creatives"]
 
 
 @then(parsers.parse('the creatives array should only include creatives belonging to concept "{concept_id}"'))
@@ -429,7 +418,8 @@ def then_each_creative_carries_concept(ctx: dict, concept_id: str) -> None:
 # creative_id against the per-principal id sets recorded at seed time — CreativeFactory
 # assigns a globally-unique creative_id per row, so the two principals' id sets are
 # disjoint and the isolation assertion is well-formed. Assertions read
-# ctx["wire_response"] (the real serialized bytes on a2a/mcp/rest) via _wire_creatives,
+# the real serialized bytes on a2a/mcp/rest via _wire_creatives (which reads the
+# dispatcher's own wire declaration through wire_dict),
 # satisfying the "actual wire bytes" constraint.
 
 _ISOLATION_CREATIVES_KEY = "isolation_creatives_by_principal"

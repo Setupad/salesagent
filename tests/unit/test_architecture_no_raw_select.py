@@ -11,7 +11,6 @@ Repository files (src/core/database/repositories/*.py) are exempt because they
 ARE the abstraction layer. Infrastructure files that manage sessions/connections
 are also exempt.
 
-beads: beads-xw7 (universal no-raw-select guard)
 """
 
 import ast
@@ -74,10 +73,10 @@ ORM_MODEL_NAMES = _discover_orm_model_names()
 # IMPORTANT: This allowlist is DEBT, not permission. New code must use
 # repository methods. See memory/feedback-allowlist-antipattern.md.
 #
-# FIXME(salesagent-xw7): migrate each of these to repository calls
+# FIXME(#1119): migrate each of these to repository calls
 ALLOWLIST: set[tuple[str, str]] = {
     # ── Adapters ──
-    # create_line_items removed — uses pre-loaded template param (salesagent-zj9)
+    # create_line_items removed — uses pre-loaded template param
     ("src/adapters/gam/managers/sync.py", "_get_recent_sync"),
     ("src/adapters/gam/managers/sync.py", "get_sync_history"),
     ("src/adapters/gam/managers/sync.py", "get_sync_stats"),
@@ -85,7 +84,7 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/adapters/gam/managers/sync.py", "needs_sync"),
     ("src/adapters/gam/managers/targeting.py", "_load_axe_keys"),
     ("src/adapters/gam/managers/targeting.py", "_load_custom_targeting_key_ids"),
-    # sync_custom_targeting_keys removed — uses AdapterConfigRepository (salesagent-zj9)
+    # sync_custom_targeting_keys removed — uses AdapterConfigRepository
     ("src/adapters/gam/managers/workflow.py", "create_manual_order_workflow_step"),
     ("src/adapters/gam_reporting_api.py", "get_ad_unit_breakdown"),
     ("src/adapters/gam_reporting_api.py", "get_advertiser_summary"),
@@ -150,7 +149,7 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/admin/blueprints/inventory.py", "check_inventory_sync"),
     ("src/admin/blueprints/inventory.py", "get_inventory_list"),
     ("src/admin/blueprints/inventory.py", "get_inventory_sizes"),
-    ("src/admin/blueprints/inventory.py", "_batch_fetch_ancestors"),  # FIXME(salesagent-y6n3): extract to repository
+    ("src/admin/blueprints/inventory.py", "_batch_fetch_ancestors"),  # FIXME(#1119): extract to repository
     ("src/admin/blueprints/inventory.py", "get_inventory_tree"),
     ("src/admin/blueprints/inventory.py", "get_order_details"),
     ("src/admin/blueprints/inventory.py", "get_orders"),
@@ -178,16 +177,13 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/admin/blueprints/policy.py", "update"),
     ("src/admin/blueprints/principals.py", "create_principal"),
     ("src/admin/blueprints/principals.py", "delete_principal"),
-    ("src/admin/blueprints/principals.py", "delete_webhook"),
     ("src/admin/blueprints/principals.py", "edit_principal"),
     ("src/admin/blueprints/principals.py", "get_gam_advertisers"),
     ("src/admin/blueprints/principals.py", "get_principal"),
     ("src/admin/blueprints/principals.py", "get_principal_config"),
     ("src/admin/blueprints/principals.py", "list_principals"),
     ("src/admin/blueprints/principals.py", "manage_webhooks"),
-    ("src/admin/blueprints/principals.py", "register_webhook"),
     ("src/admin/blueprints/principals.py", "save_testing_config"),
-    ("src/admin/blueprints/principals.py", "toggle_webhook"),
     ("src/admin/blueprints/principals.py", "update_mappings"),
     ("src/admin/blueprints/products.py", "_render_add_product_form"),
     ("src/admin/blueprints/products.py", "add_product"),
@@ -212,7 +208,6 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/admin/blueprints/settings.py", "update_ai"),
     ("src/admin/blueprints/settings.py", "update_business_rules"),
     ("src/admin/blueprints/settings.py", "update_general"),
-    ("src/admin/blueprints/settings.py", "update_slack"),
     ("src/admin/blueprints/signals_agents.py", "add_signals_agent"),
     ("src/admin/blueprints/signals_agents.py", "delete_signals_agent"),
     ("src/admin/blueprints/signals_agents.py", "edit_signals_agent"),
@@ -226,7 +221,6 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/admin/blueprints/tenants.py", "test_slack"),
     ("src/admin/blueprints/tenants.py", "update"),
     ("src/admin/blueprints/tenants.py", "update_favicon_url"),
-    ("src/admin/blueprints/tenants.py", "update_slack"),
     ("src/admin/blueprints/tenants.py", "upload_favicon"),
     ("src/admin/blueprints/users.py", "add_domain"),
     ("src/admin/blueprints/users.py", "add_user"),
@@ -236,7 +230,6 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/admin/blueprints/users.py", "remove_domain"),
     ("src/admin/blueprints/users.py", "toggle_user"),
     ("src/admin/blueprints/users.py", "update_role"),
-    ("src/admin/blueprints/workflows.py", "approve_workflow_step"),  # select(CreativeAssignment) — no creative repo yet
     ("src/admin/blueprints/workflows.py", "list_workflows"),  # select(Tenant) — no tenant repo yet
     ("src/admin/blueprints/workflows.py", "review_workflow_step"),  # select(Context) — context lookup
     # ── Admin services / utils ──
@@ -279,7 +272,6 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/core/config_loader.py", "get_tenant_by_id"),
     ("src/core/config_loader.py", "get_tenant_by_subdomain"),
     ("src/core/config_loader.py", "get_tenant_by_virtual_host"),
-    ("src/core/context_manager.py", "_send_push_notifications"),
     ("src/core/context_manager.py", "add_message"),
     ("src/core/context_manager.py", "get_context"),
     ("src/core/context_manager.py", "get_context_status"),
@@ -295,7 +287,7 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/core/database/queries.py", "get_creative_with_latest_review"),
     ("src/core/database/queries.py", "get_creatives_needing_human_review"),
     ("src/core/database/queries.py", "get_recent_reviews"),
-    # adapter_helpers.py removed — now uses AdapterConfigRepository (salesagent-zj9)
+    # adapter_helpers.py removed — now uses AdapterConfigRepository
     ("src/core/strategy.py", "_load_state"),
     ("src/core/strategy.py", "_upsert_state"),
     ("src/core/tenant_status.py", "get_tenant_status"),
@@ -318,7 +310,7 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/services/auth_config_service.py", "is_oidc_config_valid"),
     ("src/services/auth_config_service.py", "mark_oidc_verified"),
     ("src/services/auth_config_service.py", "save_oidc_config"),
-    # _run_approval_polling_thread removed — uses AdapterConfigRepository (salesagent-zj9)
+    # _run_approval_polling_thread removed — uses AdapterConfigRepository
     ("src/services/background_sync_service.py", "_mark_sync_complete"),
     ("src/services/background_sync_service.py", "_mark_sync_failed"),
     ("src/services/background_sync_service.py", "_run_sync_thread"),
@@ -332,7 +324,7 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/services/dynamic_products.py", "generate_variants_from_signals"),
     ("src/services/format_metrics_service.py", "_process_and_store_metrics"),
     ("src/services/format_metrics_service.py", "aggregate_all_tenants"),
-    # _update_adapter_config_targeting_keys removed — uses AdapterConfigRepository (salesagent-zj9)
+    # _update_adapter_config_targeting_keys removed — uses AdapterConfigRepository
     ("src/services/gam_inventory_service.py", "_upsert_inventory_item"),
     ("src/services/gam_inventory_service.py", "create_inventory_endpoints"),
     ("src/services/gam_inventory_service.py", "fetch_custom_targeting_values"),
@@ -355,7 +347,7 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/services/media_buy_status_scheduler.py", "_are_creatives_approved"),
     ("src/services/order_approval_service.py", "_mark_approval_complete"),
     ("src/services/order_approval_service.py", "_mark_approval_failed"),
-    # _run_approval_thread removed — uses AdapterConfigRepository (salesagent-zj9)
+    # _run_approval_thread removed — uses AdapterConfigRepository
     ("src/services/order_approval_service.py", "_send_approval_webhook"),
     ("src/services/order_approval_service.py", "_update_approval_progress"),
     ("src/services/order_approval_service.py", "get_approval_status"),
@@ -371,7 +363,6 @@ ALLOWLIST: set[tuple[str, str]] = {
     ("src/services/setup_checklist_service.py", "_check_optional_tasks"),
     ("src/services/setup_checklist_service.py", "get_bulk_setup_status"),
     ("src/services/setup_checklist_service.py", "get_setup_status"),
-    ("src/services/webhook_delivery_service.py", "_send_webhook_enhanced"),
 }
 
 EXPECTED_VIOLATION_COUNT = len(ALLOWLIST)
