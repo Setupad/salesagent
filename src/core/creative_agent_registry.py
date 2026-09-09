@@ -24,6 +24,7 @@ import os
 import typing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any
 
 # FIXME(#1388): ListCreativeFormatsRequest has a local subclass; import from src.core.schemas (Pattern #7/#4).
@@ -71,6 +72,20 @@ def _known_asset_types() -> frozenset[str]:
 _KNOWN_ASSET_TYPES = _known_asset_types()
 
 
+def _known_format_id_parameters() -> frozenset[str]:
+    """FormatIdParameter enum values modeled by the pinned adcp schema."""
+    known: set[str] = set()
+    parameters_field = Format.model_fields["accepts_parameters"].annotation
+    for outer in typing.get_args(parameters_field):
+        for enum_class in typing.get_args(outer):
+            if isinstance(enum_class, type) and issubclass(enum_class, Enum):
+                known.update(member.value for member in enum_class)
+    return frozenset(known)
+
+
+_KNOWN_FORMAT_ID_PARAMETERS = _known_format_id_parameters()
+
+
 def _unknown_asset_types(fmt_data: dict[str, Any]) -> set[str]:
     """Asset-type values in a format dict that adcp's closed union does not model."""
     unknown: set[str] = set()
@@ -104,6 +119,33 @@ def _is_purely_additive_asset_type(fmt_data: dict[str, Any], unknown_types: set[
     return True
 
 
+def _drop_unknown_accepts_parameters(fmt_data: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
+    """Remove additive parameter enum values not modeled by the pinned schema."""
+    parameters = fmt_data.get("accepts_parameters")
+    if not isinstance(parameters, list):
+        return fmt_data, set()
+
+    unknown_parameters = {
+        parameter
+        for parameter in parameters
+        if isinstance(parameter, str) and parameter not in _KNOWN_FORMAT_ID_PARAMETERS
+    }
+    if not unknown_parameters:
+        return fmt_data, set()
+
+    patched = copy.deepcopy(fmt_data)
+    known_parameters = [
+        parameter
+        for parameter in parameters
+        if not isinstance(parameter, str) or parameter in _KNOWN_FORMAT_ID_PARAMETERS
+    ]
+    if known_parameters:
+        patched["accepts_parameters"] = known_parameters
+    else:
+        patched.pop("accepts_parameters", None)
+    return patched, unknown_parameters
+
+
 def _validate_formats_tolerant(format_dicts: list[dict[str, Any]], logger: logging.Logger) -> list[Format]:
     """Validate formats independently; tolerate ONLY AdCP-additive asset_type growth.
 
@@ -116,7 +158,10 @@ def _validate_formats_tolerant(format_dicts: list[dict[str, Any]], logger: loggi
     validated: list[Format] = []
     skipped_count = 0
     skipped_asset_types: set[str] = set()
+    ignored_parameter_types: set[str] = set()
     for fmt_data in format_dicts:
+        fmt_data, unknown_parameters = _drop_unknown_accepts_parameters(fmt_data)
+        ignored_parameter_types.update(unknown_parameters)
         try:
             validated.append(Format.model_validate(fmt_data))
         except ValidationError:
@@ -133,6 +178,11 @@ def _validate_formats_tolerant(format_dicts: list[dict[str, Any]], logger: loggi
             skipped_count,
             sorted(skipped_asset_types),
             len(validated),
+        )
+    if ignored_parameter_types:
+        logger.warning(
+            "Ignored unsupported additive accepts_parameters value(s) %s (not modeled by the pinned adcp schema).",
+            sorted(ignored_parameter_types),
         )
     return validated
 
@@ -531,6 +581,13 @@ class CreativeAgentRegistry:
         one, so a refusal can say which of up to 100 creatives to fix.
         """
         import json
+
+        structured_content = result.get("structuredContent") or result.get("structured_content")
+        if isinstance(structured_content, dict) and "formats" in structured_content:
+            formats_list = structured_content.get("formats", [])
+            formats = _validate_formats_tolerant(formats_list, logger)
+            logger.info(f"_fetch_formats_raw_mcp: Parsed {len(formats)} formats from structuredContent")
+            return formats
 
         content_list = result.get("content", [])
         for item in content_list:

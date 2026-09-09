@@ -40,6 +40,49 @@ class TestParseMcpToolResult:
         assert len(formats) == 1
         assert formats[0].name == "Display Image"
 
+    def test_prefers_structured_content_formats(self, registry):
+        """structuredContent.formats wins when text content is only a summary."""
+        import logging
+
+        result = {
+            "content": [{"type": "text", "text": "list_creative_formats completed successfully."}],
+            "structuredContent": {
+                "formats": [
+                    {
+                        "format_id": {"agent_url": "https://creative.example.com", "id": "display_image"},
+                        "name": "Display Image",
+                        "type": "display",
+                    }
+                ]
+            },
+        }
+
+        formats = registry._parse_mcp_tool_result(result, logging.getLogger())
+        assert len(formats) == 1
+        assert formats[0].format_id.id == "display_image"
+
+    def test_structured_content_tolerates_additive_format_parameters(self, registry):
+        """Unknown accepts_parameters values do not discard otherwise usable formats."""
+        import logging
+
+        result = {
+            "structuredContent": {
+                "formats": [
+                    {
+                        "format_id": {"agent_url": "https://creative.example.com", "id": "display_image"},
+                        "name": "Display Image",
+                        "type": "display",
+                        "accepts_parameters": ["dimensions", "pixel_ratio"],
+                    }
+                ]
+            }
+        }
+
+        formats = registry._parse_mcp_tool_result(result, logging.getLogger())
+        assert len(formats) == 1
+        assert formats[0].format_id.id == "display_image"
+        assert [param.value for param in formats[0].accepts_parameters or []] == ["dimensions"]
+
     def test_no_text_content_raises(self, registry):
         """Content with no text items → raises AdCPAdapterError.
 
