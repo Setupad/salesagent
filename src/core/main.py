@@ -358,6 +358,7 @@ _sdk_tool_defs = {td["name"]: td for td in ADCP_TOOL_DEFINITIONS}
 _LOCAL_TOOL_INPUT_SCHEMAS = {
     "create_media_buy": CreateMediaBuyRequest,
 }
+_USE_FASTMCP_TOOL_INPUT_SCHEMA = {"sync_creatives"}
 
 
 def _set_tool_input_schema(tool_name: str, input_schema: dict[str, Any]) -> None:
@@ -378,6 +379,8 @@ def _register_tool(fn: Any) -> None:
     mcp.tool(**kwargs)(with_error_logging(fn))
     if tool_name in _LOCAL_TOOL_INPUT_SCHEMAS:
         _set_tool_input_schema(tool_name, _LOCAL_TOOL_INPUT_SCHEMAS[tool_name].model_json_schema(mode="validation"))
+    elif tool_name in _USE_FASTMCP_TOOL_INPUT_SCHEMA:
+        return
     elif sdk_def and sdk_def.get("inputSchema"):
         _set_tool_input_schema(tool_name, sdk_def["inputSchema"])
 
