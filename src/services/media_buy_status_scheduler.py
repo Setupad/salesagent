@@ -30,6 +30,7 @@ STATUS_CHECK_INTERVAL_SECONDS = int(os.getenv("MEDIA_BUY_STATUS_CHECK_INTERVAL")
 
 _ACTIVATABLE_STATUSES = frozenset(
     {
+        PersistedMediaBuyStatus.PENDING_CREATIVES,
         PersistedMediaBuyStatus.PENDING_START,
         PersistedMediaBuyStatus.PENDING_ACTIVATION,
         PersistedMediaBuyStatus.SCHEDULED,
@@ -107,21 +108,17 @@ class MediaBuyStatusScheduler:
                         # tenant-scoped, so build it from this row's own tenant. That
                         # keeps every write inside the isolation the class enforces
                         # rather than widening it with a cross-tenant write method.
+                        seller_committed = new_status == PersistedMediaBuyStatus.ACTIVE or (
+                            old_status == PersistedMediaBuyStatus.PENDING_CREATIVES and new_status.seller_confirmed
+                        )
                         updated = MediaBuyRepository(session, media_buy.tenant_id).update_status(
                             media_buy.media_buy_id,
                             new_status,
-                            # The sweep does not itself commit anything -- commitment
-                            # happened earlier, at the synchronous create or at approval,
-                            # and confirmed_at is write-once so a stamped row is untouched.
-                            # ACTIVE is passed as committing anyway, and the PIN is the
-                            # reason: create-media-buy-response.json @ 3.1.1 constrains
-                            # confirmed_at in exactly one direction -- a null value forbids
-                            # status "active". This sweep is the last writer before a buyer
-                            # can observe that combination, so it must not be able to
-                            # produce it. Any row reaching ACTIVE unstamped is already a
-                            # defect upstream; stamping here keeps the defect from becoming
-                            # a schema-invalid document on the wire.
-                            seller_committed=new_status == PersistedMediaBuyStatus.ACTIVE,
+                            # ACTIVE must always carry a confirmation stamp. The new
+                            # pending_creatives exit path can also be the first seller
+                            # commitment moment for future-start buys, so it stamps when
+                            # the target status is seller-confirmed.
+                            seller_committed=seller_committed,
                         )
                         if updated is None:
                             # Unreachable: media_buy_id is the sole primary key and the
@@ -153,6 +150,12 @@ class MediaBuyStatusScheduler:
         so it moves only buys that are waiting to start, and never writes a status the
         row already has.
         """
+        current = PersistedMediaBuyStatus.parse(media_buy.status, media_buy_id=media_buy.media_buy_id)
+        if current == PersistedMediaBuyStatus.PENDING_CREATIVES and not self._has_creative_assignments(
+            media_buy, session
+        ):
+            return None
+
         target = resolve_flight_window_status(
             media_buy,
             now=now,
@@ -161,11 +164,13 @@ class MediaBuyStatusScheduler:
         if target is None:
             return None  # No flight window — this sweep has no opinion.
 
-        current = media_buy.status
         if target == current:
             return None
 
         if target == PersistedMediaBuyStatus.COMPLETED:
+            return target
+
+        if target == PersistedMediaBuyStatus.SCHEDULED and current == PersistedMediaBuyStatus.PENDING_CREATIVES:
             return target
 
         # Activation only, and only out of a pre-serving state. An unattended sweep
@@ -175,6 +180,10 @@ class MediaBuyStatusScheduler:
             return target
 
         return None
+
+    def _has_creative_assignments(self, media_buy: MediaBuy, session) -> bool:
+        stmt = select(CreativeAssignment).filter_by(tenant_id=media_buy.tenant_id, media_buy_id=media_buy.media_buy_id)
+        return session.scalars(stmt).first() is not None
 
     def _are_creatives_approved(self, media_buy: MediaBuy, session) -> bool:
         """Check if all creatives for a media buy are approved.

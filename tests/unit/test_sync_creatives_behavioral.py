@@ -10,7 +10,7 @@ Tests organized by BR-RULE invariant, covering:
 Reference: design field.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -46,6 +46,8 @@ def _make_db_package():
         mb_status="draft",
         mb_approved_at=None,
         product_id=None,
+        start_time=None,
+        end_time=None,
     ):
         db_package = Mock()
         db_package.package_id = package_id
@@ -56,6 +58,10 @@ def _make_db_package():
         db_media_buy.media_buy_id = media_buy_id
         db_media_buy.status = mb_status
         db_media_buy.approved_at = mb_approved_at
+        db_media_buy.start_time = start_time
+        db_media_buy.end_time = end_time
+        db_media_buy.start_date = start_time.date() if start_time else None
+        db_media_buy.end_date = end_time.date() if end_time else None
 
         return db_package, db_media_buy
 
@@ -65,6 +71,7 @@ def _make_db_package():
 def _make_creative_uow(assignment_repo=None):
     """Create a mock CreativeUoW for _process_assignments tests."""
     mock_assignment_repo = assignment_repo or MagicMock()
+    mock_assignment_repo.unapproved_creative_ids.return_value = []
     _, mock_uow = make_mock_uow(
         repos={
             "assignments": mock_assignment_repo,
@@ -190,6 +197,30 @@ class TestMediaBuyStatusTransitions:
         )
 
         mock_uow.media_buys.update_status.assert_not_called()
+
+    def test_pending_creatives_with_approved_assignment_transitions_to_scheduled(self, tenant, _make_db_package):
+        """rule-040-inv3b: pending_creatives exits the hold after an approved creative assignment."""
+        db_package, db_media_buy = _make_db_package(
+            mb_status="pending_creatives",
+            start_time=datetime.now(UTC) + timedelta(days=1),
+            end_time=datetime.now(UTC) + timedelta(days=2),
+        )
+        db_creative = Mock()
+        db_creative.status = "approved"
+        db_creative.agent_url = "https://creative.adcontextprotocol.org"
+        db_creative.format = "display_300x250"
+        results = [SyncCreativeResult(creative_id="c1", action="updated")]
+
+        _, mock_uow = self._run_assignments(
+            assignments={"c1": ["pkg_1"]},
+            results=results,
+            tenant=tenant,
+            db_package=db_package,
+            db_media_buy=db_media_buy,
+            db_creative=db_creative,
+        )
+
+        mock_uow.media_buys.update_status.assert_called_once_with("mb_1", "scheduled", seller_committed=True)
 
     def test_dedup_transition_multiple_creatives_same_buy(self, tenant, _make_db_package):
         """rule-040-inv4: multiple creatives in same media buy trigger transition once."""

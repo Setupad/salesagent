@@ -373,6 +373,65 @@ async def test_pending_activation_activates_without_creatives(integration_db):
 
 @pytest.mark.requires_db
 @pytest.mark.asyncio
+async def test_pending_creatives_transitions_to_active_with_approved_assignment(integration_db):
+    """A pending_creatives buy should activate once an assigned creative is approved."""
+    tenant_id = _create_test_tenant("tenant_pending_creatives_active")
+    principal_id = _create_test_principal(tenant_id)
+
+    past_start = datetime.now(UTC) - timedelta(hours=1)
+    future_end = datetime.now(UTC) + timedelta(days=7)
+
+    media_buy_id = _create_media_buy(
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        media_buy_id="mb_pending_creatives_to_active",
+        status="pending_creatives",
+        start_time=past_start,
+        end_time=future_end,
+    )
+    creative_id = _create_creative(
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        creative_id="creative_pending_creatives_approved",
+        status="approved",
+    )
+    _create_creative_assignment(tenant_id, media_buy_id, creative_id, principal_id)
+
+    assert read_media_buy_state(tenant_id, media_buy_id).status == "pending_creatives"
+
+    scheduler = MediaBuyStatusScheduler()
+    await scheduler._update_statuses()
+
+    assert read_media_buy_state(tenant_id, media_buy_id).status == "active"
+
+
+@pytest.mark.requires_db
+@pytest.mark.asyncio
+async def test_pending_creatives_stays_pending_without_assignments(integration_db):
+    """A pending_creatives buy with no assignments should stay held for sync_creatives."""
+    tenant_id = _create_test_tenant("tenant_pending_creatives_no_assignments")
+    principal_id = _create_test_principal(tenant_id)
+
+    past_start = datetime.now(UTC) - timedelta(hours=1)
+    future_end = datetime.now(UTC) + timedelta(days=7)
+
+    media_buy_id = _create_media_buy(
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        media_buy_id="mb_pending_creatives_no_assignments",
+        status="pending_creatives",
+        start_time=past_start,
+        end_time=future_end,
+    )
+
+    scheduler = MediaBuyStatusScheduler()
+    await scheduler._update_statuses()
+
+    assert read_media_buy_state(tenant_id, media_buy_id).status == "pending_creatives"
+
+
+@pytest.mark.requires_db
+@pytest.mark.asyncio
 async def test_pending_activation_stays_pending_when_start_time_not_passed(integration_db):
     """Media buy in 'pending_activation' should stay pending if start_time is in the future."""
     tenant_id = _create_test_tenant("tenant_pending_future")

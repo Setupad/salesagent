@@ -18,7 +18,7 @@ from ._sync import _sync_creatives_impl
 
 async def sync_creatives(
     creatives: list[CreativeAsset],
-    assignments: dict[str, list[str]] | None = None,
+    assignments: dict[str, list[str]] | list[dict[str, Any]] | None = None,
     creative_ids: list[str] | None = None,
     delete_missing: Annotated[
         bool, Field(description="Delete creatives not in the sync payload (use with caution)")
@@ -77,7 +77,7 @@ def sync_creatives_raw(
     # A2A/REST send wire dicts; _sync_creatives_impl validates each entry
     # individually (partial-success semantics with per-creative results).
     creatives: list[CreativeAsset] | list[dict[str, Any]],
-    assignments: dict = None,
+    assignments: dict | list | None = None,
     creative_ids: list[str] = None,
     delete_missing: bool = False,
     dry_run: bool = False,
