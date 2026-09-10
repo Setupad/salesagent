@@ -38,7 +38,7 @@ def _append_warning(result: SyncCreativeResult, warning: str) -> None:
 
 def _sync_creatives_impl(
     creatives: Sequence[CreativeAsset | BaseModel | dict[str, Any]],
-    assignments: dict | None = None,
+    assignments: dict | list | None = None,
     creative_ids: list[str] | None = None,
     delete_missing: bool = False,
     dry_run: bool = False,

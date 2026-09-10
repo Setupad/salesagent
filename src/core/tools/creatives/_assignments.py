@@ -1,6 +1,7 @@
 """Creative-to-package assignment processing."""
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from src.core.database.models import PersistedMediaBuyStatus
@@ -12,9 +13,29 @@ from src.core.exceptions import (
 )
 from src.core.logging_config import log_safe
 from src.core.schemas import SyncCreativeResult
+from src.core.tools._media_buy_transitions import resolve_flight_window_status
 from src.core.tools.creatives._processing import _failed_sync_result
 
 logger = logging.getLogger(__name__)
+
+
+def _status_after_assignment(media_buy: Any, assignment_repo: Any) -> PersistedMediaBuyStatus | None:
+    current = PersistedMediaBuyStatus.parse(media_buy.status, media_buy_id=media_buy.media_buy_id)
+    if current != PersistedMediaBuyStatus.PENDING_CREATIVES:
+        return None
+
+    unapproved_ids = assignment_repo.unapproved_creative_ids(media_buy.media_buy_id)
+    if unapproved_ids:
+        return None
+
+    target = resolve_flight_window_status(
+        media_buy,
+        now=datetime.now(UTC),
+        creatives_approved=True,
+    )
+    if target == PersistedMediaBuyStatus.PENDING_CREATIVES:
+        return None
+    return target
 
 
 def _process_assignments(
@@ -279,12 +300,19 @@ def _process_assignments(
                     if actual_package_id is not None:
                         assignments_by_creative[creative_id].append(actual_package_id)
 
-            # Update media buy status if needed (draft -> pending_creatives)
+            # Update media buy status if needed.
             assert uow.media_buys is not None
             for mb_id, mb_obj in media_buys_with_new_assignments.items():
                 if mb_obj.status == "draft" and mb_obj.approved_at is not None:
                     uow.media_buys.update_status(mb_id, PersistedMediaBuyStatus.PENDING_CREATIVES)
                     logger.info(f"[SYNC_CREATIVES] Media buy {mb_id} transitioned from draft to pending_creatives")
+                    continue
+
+                next_status = _status_after_assignment(mb_obj, assignment_repo)
+                if next_status is None:
+                    continue
+                uow.media_buys.update_status(mb_id, next_status, seller_committed=next_status.seller_confirmed)
+                logger.info(f"[SYNC_CREATIVES] Media buy {mb_id} transitioned from {mb_obj.status} to {next_status}")
 
             # UoW auto-commits on clean exit
 
