@@ -398,7 +398,8 @@ Target users based on local weather conditions for maximum relevance.</div>
             <ul style="margin: 0.5rem 0 0 1.5rem; color: #666; font-size: 0.9rem;">
                 <li><strong>CPM Fixed</strong> → Standard line item (priority 8, guaranteed delivery)</li>
                 <li><strong>Flat Rate</strong> → Sponsorship line item (priority 4, guaranteed delivery)</li>
-                <li><strong>CPM/VCPM/CPC Auction</strong> → Price Priority line item (priority 12, non-guaranteed)</li>
+                <li><strong>VCPM</strong> → Standard line item (priority 8, viewable impressions)</li>
+                <li><strong>CPM/CPC Auction</strong> → Price Priority line item (priority 12, non-guaranteed)</li>
             </ul>
         </div>
 
@@ -1314,9 +1315,11 @@ function addPricingOption(existingData = null) {
                             <option value="cpm_fixed" ${existingData && existingData.pricing_model?.toLowerCase() === 'cpm' && existingData.is_fixed === true ? 'selected' : ''}>CPM - Fixed Rate (Cost per 1,000 impressions)</option>
                             <option value="flat_rate" ${existingData && existingData.pricing_model?.toLowerCase() === 'flat_rate' ? 'selected' : ''}>Flat Rate - Fixed Campaign Cost (Sponsorship)</option>
                         </optgroup>
+                        <optgroup label="Standard Line Item">
+                            <option value="vcpm" ${existingData && existingData.pricing_model?.toLowerCase() === 'vcpm' ? 'selected' : ''}>VCPM - Standard (Viewable impressions)</option>
+                        </optgroup>
                         <optgroup label="Non-Guaranteed (Auction/Bidding)">
                             <option value="cpm_auction" ${existingData && existingData.pricing_model?.toLowerCase() === 'cpm' && existingData.is_fixed === false ? 'selected' : ''}>CPM - Auction (Floor price bidding)</option>
-                            <option value="vcpm" ${existingData && existingData.pricing_model?.toLowerCase() === 'vcpm' ? 'selected' : ''}>VCPM - Auction (Viewable impressions)</option>
                             <option value="cpc" ${existingData && existingData.pricing_model?.toLowerCase() === 'cpc' ? 'selected' : ''}>CPC - Auction (Cost per click)</option>
                         </optgroup>
                     </select>
@@ -1363,7 +1366,7 @@ function addPricingOption(existingData = null) {
         const rateGroup = document.getElementById(`rate-group-${index}`);
         const floorGroup = document.getElementById(`floor-group-${index}`);
 
-        // vCPM and CPC are always auction-based (no fixed rate option)
+        // vCPM and CPC use floor pricing in this form.
         const value = modelSelect.value;
         const isAuction = value.includes('auction') || value === 'vcpm' || value === 'cpc';
 
