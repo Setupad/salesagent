@@ -94,6 +94,22 @@ def _build_forecast_status(product: Product, latest_job: SyncJob | None) -> dict
     }
 
 
+def _json_field_as_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if value:
+        return json.loads(value)
+    return {}
+
+
+def _json_field_as_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    if value:
+        return json.loads(value)
+    return []
+
+
 def _format_to_dict(fmt: Format) -> dict:
     """Convert a Format object to a frontend-compatible dict.
 
@@ -550,15 +566,10 @@ def list_products(tenant_id):
             for product in products:
                 # Use helper function to get pricing options (handles legacy fallback)
                 pricing_options_list = get_product_pricing_options(product)
+                implementation_config = _json_field_as_dict(product.implementation_config)
 
                 # Parse formats and resolve names from creative agents
-                formats_data = (
-                    product.format_ids
-                    if isinstance(product.format_ids, list)
-                    else json.loads(product.format_ids)
-                    if product.format_ids
-                    else []
-                )
+                formats_data = _json_field_as_list(product.format_ids)
 
                 # Debug: Log raw formats data
                 logger.info(
@@ -630,19 +641,10 @@ def list_products(tenant_id):
                     "description": product.description,
                     "pricing_options": pricing_options_list,
                     "formats": resolved_formats,
-                    "countries": (
-                        product.countries
-                        if isinstance(product.countries, list)
-                        else json.loads(product.countries)
-                        if product.countries
-                        else []
-                    ),
-                    "implementation_config": (
-                        product.implementation_config
-                        if isinstance(product.implementation_config, dict)
-                        else json.loads(product.implementation_config)
-                        if product.implementation_config
-                        else {}
+                    "countries": _json_field_as_list(product.countries),
+                    "implementation_config": implementation_config,
+                    "effective_line_item_type": GAMProductConfigService.get_effective_line_item_type(
+                        implementation_config, pricing_options_list
                     ),
                     "created_at": getattr(product, "created_at", None),
                     "inventory_details": inventory_details.get(
@@ -884,18 +886,25 @@ def add_product(tenant_id):
 
                 if pricing_options_data and len(pricing_options_data) > 0:
                     first_option = pricing_options_data[0]
+                    first_pricing_model = first_option.get("pricing_model")
                     # Determine delivery_type based on is_fixed
-                    if first_option.get("is_fixed", True):
+                    if first_option.get("is_fixed", True) or (
+                        adapter_type == "google_ad_manager" and first_pricing_model == "vcpm"
+                    ):
                         delivery_type = "guaranteed"
                     else:
                         delivery_type = "non_guaranteed"
+                else:
+                    first_pricing_model = None
 
                 # Build implementation config based on adapter type
                 implementation_config = {}
                 if adapter_type == "google_ad_manager":
                     # Parse GAM-specific fields from unified form
                     gam_config_service = GAMProductConfigService()
-                    base_config = gam_config_service.generate_default_config(delivery_type, formats)
+                    base_config = gam_config_service.generate_default_config(
+                        delivery_type, formats, pricing_model=first_pricing_model
+                    )
 
                     # Add ad unit/placement targeting if provided
                     ad_unit_ids = form_data.get("targeted_ad_unit_ids", "").strip()
@@ -1838,6 +1847,20 @@ def edit_product(tenant_id, product_id):
                     flash("Product must have at least one pricing option", "error")
                     return redirect(url_for("products.edit_product", tenant_id=tenant_id, product_id=product_id))
 
+                if adapter_type == "google_ad_manager" and pricing_options_data[0].get("pricing_model") == "vcpm":
+                    product.delivery_type = "guaranteed"
+                    implementation_config = _json_field_as_dict(product.implementation_config)
+                    formats_for_defaults = _json_field_as_list(product.format_ids)
+                    product.implementation_config = {
+                        **implementation_config,
+                        **GAMProductConfigService.generate_default_config(
+                            "guaranteed", formats_for_defaults, pricing_model="vcpm"
+                        ),
+                    }
+                    from sqlalchemy.orm import attributes
+
+                    attributes.flag_modified(product, "implementation_config")
+
                 # Fetch existing pricing options
                 existing_options = list(
                     db_session.scalars(
@@ -1982,24 +2005,7 @@ def edit_product(tenant_id, product_id):
                 return redirect(url_for("products.list_products", tenant_id=tenant_id))
 
             # GET request - show form
-            # Load existing pricing options (AdCP PR #88)
-            pricing_options = db_session.scalars(
-                select(PricingOption).filter_by(tenant_id=tenant_id, product_id=product_id)
-            ).all()
-
-            pricing_options_list = []
-            for po in pricing_options:
-                pricing_options_list.append(
-                    {
-                        "pricing_model": po.pricing_model,
-                        "rate": float(po.rate) if po.rate else None,
-                        "currency": po.currency,
-                        "is_fixed": po.is_fixed,
-                        "price_guidance": po.price_guidance,
-                        "parameters": po.parameters,
-                        "min_spend_per_package": float(po.min_spend_per_package) if po.min_spend_per_package else None,
-                    }
-                )
+            pricing_options_list = get_product_pricing_options(product)
 
             # Derive display values from pricing_options
             delivery_type = product.delivery_type
@@ -2008,18 +2014,17 @@ def edit_product(tenant_id, product_id):
 
             if pricing_options_list:
                 first_pricing = pricing_options_list[0]
-                delivery_type = "guaranteed" if first_pricing["is_fixed"] else "non_guaranteed"
+                delivery_type = (
+                    "guaranteed"
+                    if first_pricing["is_fixed"]
+                    or (adapter_type == "google_ad_manager" and first_pricing["pricing_model"] == "vcpm")
+                    else "non_guaranteed"
+                )
                 cpm = first_pricing["rate"]
                 price_guidance = first_pricing["price_guidance"]
 
             # Parse implementation_config
-            implementation_config = (
-                product.implementation_config
-                if isinstance(product.implementation_config, dict)
-                else json.loads(product.implementation_config)
-                if product.implementation_config
-                else {}
-            )
+            implementation_config = _json_field_as_dict(product.implementation_config)
 
             # Parse targeting_template - build from implementation_config if not set
             targeting_template = (

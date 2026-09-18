@@ -104,8 +104,8 @@
                         {% endif %}
 
                         <!-- Delivery Type -->
-                        {% if product.implementation_config and product.implementation_config.line_item_type %}
-                            <span class="badge badge-secondary">{{ product.implementation_config.line_item_type }}</span>
+                        {% if product.effective_line_item_type %}
+                            <span class="badge badge-secondary">{{ product.effective_line_item_type }}</span>
                         {% elif product.pricing_options and product.pricing_options|length > 0 and product.pricing_options[0].is_fixed %}
                             <span class="badge">Guaranteed</span>
                         {% endif %}
@@ -189,9 +189,9 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if product.implementation_config and product.implementation_config.line_item_type %}
+                    {% if product.effective_line_item_type %}
                         {# Show GAM line item type if available #}
-                        {% set line_item_type = product.implementation_config.line_item_type %}
+                        {% set line_item_type = product.effective_line_item_type %}
                         {% if line_item_type == "STANDARD" %}
                             <span class="badge" style="background: #4285f4;">Standard</span>
                         {% elif line_item_type == "SPONSORSHIP" %}

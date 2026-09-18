@@ -342,14 +342,14 @@ function addPricingOption(existingData = null) {
                         <option value="">Select...</option>
                         <option value="cpm_fixed" ${existingData && existingData.pricing_model === 'cpm' && existingData.is_fixed ? 'selected' : ''}>CPM - Fixed Rate</option>
                         <option value="cpm_auction" ${existingData && existingData.pricing_model === 'cpm' && !existingData.is_fixed ? 'selected' : ''}>CPM - Auction</option>
-                        <option value="vcpm" ${existingData && existingData.pricing_model === 'vcpm' ? 'selected' : ''}>VCPM - Auction (Viewable impressions)</option>
+                        <option value="vcpm" ${existingData && existingData.pricing_model === 'vcpm' ? 'selected' : ''}>VCPM - Standard (Viewable impressions)</option>
                         <option value="cpcv" ${existingData && existingData.pricing_model === 'cpcv' ? 'selected' : ''}>CPCV (Cost per completed view)</option>
                         <option value="cpp" ${existingData && existingData.pricing_model === 'cpp' ? 'selected' : ''}>CPP (Cost per point/GRP)</option>
                         <option value="cpc" ${existingData && existingData.pricing_model === 'cpc' ? 'selected' : ''}>CPC (Cost per click)</option>
                         <option value="cpv" ${existingData && existingData.pricing_model === 'cpv' ? 'selected' : ''}>CPV (Cost per view)</option>
                         <option value="flat_rate" ${existingData && existingData.pricing_model === 'flat_rate' ? 'selected' : ''}>Flat Rate</option>
                     </select>
-                    <small style="color: #666;">Guaranteed: CPM Fixed, Flat Rate | Non-guaranteed: CPM/VCPM/CPC Auction</small>
+                    <small style="color: #666;">Standard: CPM Fixed, VCPM | Sponsorship: Flat Rate | Price Priority: CPM/CPC Auction</small>
                 </div>
 
                 <div class="form-group">
@@ -410,7 +410,7 @@ function addPricingOption(existingData = null) {
         const priceGuidance = document.getElementById(`price-guidance-${index}`);
 
         // Determine if fixed or auction from pricing model selection
-        // Auction models: cpm_auction, vcpm, cpc
+        // Models using floor-price entry in this form: cpm_auction, vcpm, cpc
         const isFixed = !['cpm_auction', 'vcpm', 'cpc'].includes(pricingModel);
 
         if (isFixed) {
@@ -421,7 +421,7 @@ function addPricingOption(existingData = null) {
             const floorInput = document.querySelector(`input[name="floor_${index}"]`);
             if (floorInput) floorInput.required = false;
         } else {
-            // Auction mode (cpm_auction, vcpm, cpc)
+            // Floor-price mode (cpm_auction, vcpm, cpc)
             rateGroup.style.display = 'none';
             floorGroup.style.display = 'block';
             priceGuidance.style.display = 'block';

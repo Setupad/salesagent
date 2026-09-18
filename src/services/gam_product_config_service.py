@@ -11,12 +11,27 @@ class GAMProductConfigService:
     """Handles GAM-specific product configuration management."""
 
     @staticmethod
-    def generate_default_config(delivery_type: str, formats: list[str] | None = None) -> dict[str, Any]:
+    def get_effective_line_item_type(
+        implementation_config: dict[str, Any] | None, pricing_options: list[dict[str, Any]] | None = None
+    ) -> str | None:
+        if pricing_options and pricing_options[0].get("pricing_model", "").lower() == "vcpm":
+            return "STANDARD"
+        if implementation_config:
+            line_item_type = implementation_config.get("line_item_type")
+            if isinstance(line_item_type, str):
+                return line_item_type
+        return None
+
+    @staticmethod
+    def generate_default_config(
+        delivery_type: str, formats: list[str] | None = None, pricing_model: str | None = None
+    ) -> dict[str, Any]:
         """Generate default GAM implementation config based on product delivery type.
 
         Args:
             delivery_type: "guaranteed" or "non_guaranteed"
             formats: List of format IDs to derive creative placeholders
+            pricing_model: Optional AdCP pricing model for GAM compatibility defaults
 
         Returns:
             Dictionary of GAM implementation config with sensible defaults
@@ -29,8 +44,19 @@ class GAMProductConfigService:
             "include_descendants": True,
         }
 
+        if pricing_model and pricing_model.lower() == "vcpm":
+            base_config.update(
+                {
+                    "cost_type": "VCPM",
+                    "line_item_type": "STANDARD",
+                    "priority": 8,
+                    "primary_goal_type": "LIFETIME",
+                    "delivery_rate_type": "EVENLY",
+                    "non_guaranteed_automation": "manual",
+                }
+            )
         # Delivery-type-specific defaults
-        if delivery_type == "guaranteed":
+        elif delivery_type == "guaranteed":
             base_config.update(
                 {
                     "line_item_type": "STANDARD",
