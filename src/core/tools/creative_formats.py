@@ -12,6 +12,7 @@ SDK 5.7 type:ignore tracking (adcontextprotocol/adcp-client-python#913):
 import asyncio
 import concurrent.futures
 import logging
+import os
 import time
 from collections.abc import Sequence
 from typing import Annotated
@@ -29,6 +30,9 @@ from adcp.types import (
     UrlFormatAsset,
     VideoFormatAsset,
     WcagLevel,
+)
+from adcp.types import (
+    Error as AdCPResponseError,
 )
 from adcp.types import Format as AdcpFormat
 from adcp.types.generated_poc.enums.disclosure_persistence import DisclosurePersistence
@@ -69,6 +73,57 @@ ADVERTISED_CREATIVE_AGENT_CAPABILITIES: tuple[CreativeAgentCapability, ...] = (
     CreativeAgentCapability.assembly,
     CreativeAgentCapability.preview,
 )
+
+LIST_CREATIVE_FORMATS_FETCH_TIMEOUT_SECONDS = float(os.getenv("LIST_CREATIVE_FORMATS_FETCH_TIMEOUT", "15"))
+
+
+def _creative_format_fetch_timeout_result(timeout_seconds: float):
+    from src.core.creative_agent_registry import FormatFetchResult
+
+    return FormatFetchResult(
+        formats=[],
+        errors=[
+            AdCPResponseError(
+                code="AGENT_UNREACHABLE",
+                message=f"Creative agent format discovery timed out after {timeout_seconds:g}s",
+            )
+        ],
+    )
+
+
+def _fetch_creative_formats_with_timeout(registry, tenant_id: str):
+    from src.core.creative_agent_registry import FormatFetchResult
+
+    timeout_seconds = LIST_CREATIVE_FORMATS_FETCH_TIMEOUT_SECONDS
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(
+                asyncio.wait_for(
+                    registry.list_all_formats_with_errors(tenant_id=tenant_id),
+                    timeout=timeout_seconds,
+                )
+            )
+        except TimeoutError:
+            logger.error("Creative format discovery timed out after %ss", timeout_seconds)
+            return _creative_format_fetch_timeout_result(timeout_seconds)
+        finally:
+            loop.close()
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(lambda: asyncio.run(registry.list_all_formats_with_errors(tenant_id=tenant_id)))
+    try:
+        fetch_result: FormatFetchResult = future.result(timeout=timeout_seconds)
+        return fetch_result
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        logger.error("Creative format discovery timed out after %ss", timeout_seconds)
+        return _creative_format_fetch_timeout_result(timeout_seconds)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _ensure_backward_compatible_format[FormatT: AdcpFormat](f: FormatT) -> FormatT:
@@ -215,20 +270,7 @@ def _list_creative_formats_impl(
         ) from e
 
     # Use list_all_formats_with_errors() to get per-agent error reporting (FD-ERR-01, FD-ERR-02)
-    try:
-        loop = asyncio.get_running_loop()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(
-                lambda: asyncio.run(registry.list_all_formats_with_errors(tenant_id=tenant["tenant_id"]))
-            )
-            fetch_result: FormatFetchResult = future.result()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            fetch_result = loop.run_until_complete(registry.list_all_formats_with_errors(tenant_id=tenant["tenant_id"]))
-        finally:
-            loop.close()
+    fetch_result: FormatFetchResult = _fetch_creative_formats_with_timeout(registry, tenant["tenant_id"])
 
     formats = fetch_result.formats
     agent_errors = fetch_result.errors
