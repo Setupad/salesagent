@@ -148,7 +148,7 @@ EXPOSE 8000
 # Health check through nginx, so a dead proxy is unhealthy (nginx proxies /health to :8080).
 # A deployment that sets SKIP_NGINX defines its own healthcheck, as every compose file does.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl --fail --silent --show-error --max-time 2 http://localhost:8000/health || exit 1
 
 USER app:app
 
