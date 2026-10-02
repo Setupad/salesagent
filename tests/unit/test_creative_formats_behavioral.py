@@ -8,6 +8,8 @@ these tests will catch it.
 Each test references its upstream BDD scenario ID for traceability.
 """
 
+import asyncio
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -693,6 +695,42 @@ class TestPartialAgentFailureReturnsFormatsAndErrors:
         for err in response.errors:
             assert err.code is not None
             assert err.message is not None
+
+    def test_format_discovery_timeout_returns_agent_error(self):
+        """A hung creative agent fetch must return an error instead of blocking the server."""
+        from src.core.tools.creative_formats import _list_creative_formats_impl
+
+        req = ListCreativeFormatsRequest()
+        identity = PrincipalFactory.make_identity(
+            principal_id=None,
+            tenant_id=MOCK_TENANT["tenant_id"],
+            tenant=MOCK_TENANT,
+        )
+
+        with (
+            patch("src.core.creative_agent_registry.get_creative_agent_registry") as mock_registry,
+            patch("src.core.tools.creative_formats.get_audit_logger") as mock_audit,
+            patch("src.core.tools.creative_formats.LIST_CREATIVE_FORMATS_FETCH_TIMEOUT_SECONDS", 0.01),
+        ):
+            mock_reg = MagicMock()
+
+            async def hung_list_formats(**kwargs):
+                await asyncio.sleep(0.2)
+
+            mock_reg.list_all_formats_with_errors = hung_list_formats
+            mock_reg.list_all_formats = hung_list_formats
+            mock_registry.return_value = mock_reg
+            mock_audit.return_value = MagicMock()
+
+            started = time.monotonic()
+            response = _list_creative_formats_impl(req, identity)
+            elapsed = time.monotonic() - started
+
+        assert elapsed < 0.15
+        assert response.formats == []
+        assert response.errors is not None
+        assert response.errors[0].code == "AGENT_UNREACHABLE"
+        assert "timed out" in response.errors[0].message
 
 
 class TestAllAgentsFailReturnsEmptyFormatsAndErrors:
