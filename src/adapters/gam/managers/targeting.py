@@ -276,6 +276,13 @@ class GAMTargetingManager:
 
         return self.custom_targeting_key_ids[key_name]
 
+    def _add_platform_custom_targeting(self, custom_targeting: dict[str, Any], gam_custom: dict[str, Any]) -> None:
+        """Add buyer-supplied GAM custom targeting, resolving key names to GAM IDs."""
+        for field_name in ("key_values", "key_value_pairs"):
+            for key_name, value in gam_custom.get(field_name, {}).items():
+                key_id = key_name if str(key_name).isdigit() else self.resolve_custom_targeting_key_id(key_name)
+                custom_targeting[key_id] = value
+
     def _get_or_create_custom_targeting_value(self, key_id: str, value_name: str) -> int:
         """Get or create a custom targeting value in GAM.
 
@@ -396,13 +403,14 @@ class GAMTargetingManager:
             # Build custom criteria object
             # For custom targeting values, GAM requires value IDs (not names)
             # We need to create or lookup the value ID for the value name
-            value_id = self._get_or_create_custom_targeting_value(key_id, value_name)
+            values = value_name if isinstance(value_name, list) else [value_name]
+            value_ids = [self._get_or_create_custom_targeting_value(key_id, value) for value in values]
 
             criteria = {
                 "xsi_type": "CustomCriteria",  # Explicit type for zeep SOAP serialization
                 "keyId": int(key_id),  # GAM expects integer key ID
                 "operator": "IS_NOT" if is_negative else "IS",
-                "valueIds": [value_id],  # Custom targeting value ID
+                "valueIds": value_ids,  # Multiple values = OR logic in GAM
             }
             children.append(criteria)
 
@@ -800,11 +808,11 @@ class GAMTargetingManager:
             )
 
         # Custom key-value targeting
-        custom_targeting = {}
+        custom_targeting: dict[str, Any] = {}
 
         # Platform-specific custom targeting
         if targeting_overlay.custom and "gam" in targeting_overlay.custom:
-            custom_targeting.update(targeting_overlay.custom["gam"].get("key_values", {}))
+            self._add_platform_custom_targeting(custom_targeting, targeting_overlay.custom["gam"])
 
         # AEE signal integration via key-value pairs (managed-only)
         if targeting_overlay.key_value_pairs:

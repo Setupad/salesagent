@@ -170,9 +170,11 @@ from src.services.gam_product_config_service import GAMProductConfigService
 from src.services.targeting_capabilities import (
     property_list_unsupported_advisories,
     raise_if_property_targeting_violations,
+    raise_if_selectable_custom_targeting_violations,
     validate_geo_overlap,
     validate_overlay_targeting,
     validate_property_targeting_allowed,
+    validate_selectable_custom_targeting,
     validate_unknown_targeting_fields,
 )
 
@@ -2494,6 +2496,16 @@ async def _create_media_buy_impl(
                     )
                 ]
                 raise_if_property_targeting_violations(property_targeting_violations)
+
+                selectable_custom_targeting_violations = [
+                    violation
+                    for package in req.packages
+                    if package.product_id in product_map
+                    for violation in validate_selectable_custom_targeting(
+                        product_map[package.product_id], package.targeting_overlay
+                    )
+                ]
+                raise_if_selectable_custom_targeting_violations(selectable_custom_targeting_violations)
 
             # Resolve legacy pricing_option_id values to actual product pricing_option_ids
             # This happens when using the legacy product_ids parameter (auto-converted to packages)

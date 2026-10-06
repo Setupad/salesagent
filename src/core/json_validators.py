@@ -52,6 +52,7 @@ class TargetingTemplateModel(BaseModel):
     audience_segments: list[str] | None = None
     content_categories: list[str] | None = None
     custom_parameters: dict[str, Any] | None = None
+    selectable_key_value_pairs: dict[str, Any] | None = None
 
 
 class PolicySettingsModel(BaseModel):

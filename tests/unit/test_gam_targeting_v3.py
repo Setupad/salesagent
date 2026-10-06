@@ -212,6 +212,27 @@ class TestBuildTargetingCityRemoved:
         assert "geoTargeting" in result
 
 
+class TestBuildTargetingCustomGam:
+    """GAM custom targeting from buyer-selectable product options."""
+
+    def test_key_value_pairs_resolve_key_names(self, gam_manager):
+        gam_manager.custom_targeting_key_ids = {"sport": "44444"}
+
+        def mock_get_value(key_id, value_name):
+            return {("44444", "basketball"): 101, ("44444", "football"): 102}[(key_id, value_name)]
+
+        gam_manager._get_or_create_custom_targeting_value = mock_get_value
+        targeting = Targeting(custom={"gam": {"key_value_pairs": {"sport": ["basketball", "football"]}}})
+
+        result = gam_manager.build_targeting(targeting)
+
+        custom_targeting = result["customTargeting"]
+        criteria = [child for child in custom_targeting["children"] if child["keyId"] == 44444]
+        assert len(criteria) == 1
+        assert criteria[0]["operator"] == "IS"
+        assert criteria[0]["valueIds"] == [101, 102]
+
+
 class TestValidateTargetingV3:
     """validate_targeting uses v3 fields, not v2."""
 

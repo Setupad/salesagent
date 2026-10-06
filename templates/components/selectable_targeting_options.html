@@ -1,0 +1,12 @@
+{% set selectable_targeting_json = form_data.selectable_key_value_pairs if form_data and form_data.selectable_key_value_pairs else (product.targeting_template.selectable_key_value_pairs | tojson(indent=2) if product and product.targeting_template and product.targeting_template.selectable_key_value_pairs else '') %}
+
+<div class="form-group">
+    <label for="selectable_key_value_pairs">Buyer-selectable custom targeting</label>
+    <textarea id="selectable_key_value_pairs"
+              name="selectable_key_value_pairs"
+              rows="7"
+              placeholder='{"sport":{"display_name":"Sport","values":["basketball","football"]}}'>{{ selectable_targeting_json }}</textarea>
+    <small style="display: block; margin-top: 0.35rem; color: #666;">
+        Declare key/value options buyers may choose in create_media_buy targeting_overlay.custom.gam.key_value_pairs.
+    </small>
+</div>

@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from adcp.exceptions import ADCPConnectionError, ADCPError, ADCPTimeoutError
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
@@ -35,6 +36,25 @@ logger = logging.getLogger(__name__)
 
 # Create Blueprint
 products_bp = Blueprint("products", __name__)
+
+
+def _apply_selectable_key_value_pairs(targeting_template: dict[str, Any], form_data: dict[str, Any]) -> None:
+    selectable_json = form_data.get("selectable_key_value_pairs", "").strip()
+    if not selectable_json:
+        targeting_template.pop("selectable_key_value_pairs", None)
+        return
+
+    try:
+        selectable_key_value_pairs = json.loads(selectable_json)
+    except json.JSONDecodeError:
+        flash("Buyer-selectable custom targeting must be valid JSON.", "warning")
+        return
+
+    if not isinstance(selectable_key_value_pairs, dict):
+        flash("Buyer-selectable custom targeting must be a JSON object.", "warning")
+        return
+
+    targeting_template["selectable_key_value_pairs"] = selectable_key_value_pairs
 
 
 def _start_product_forecast_refresh_or_warn(tenant_id: str, product_id: str, product_name: str) -> str | None:
@@ -1000,6 +1020,7 @@ def add_product(tenant_id):
                     targeting_template = json.loads(targeting_template_json) if targeting_template_json else {}
                 except json.JSONDecodeError:
                     targeting_template = {}
+                _apply_selectable_key_value_pairs(targeting_template, form_data)
 
                 # If targeting template has key_value_pairs, copy to implementation_config for GAM
                 if targeting_template.get("key_value_pairs"):
@@ -1760,6 +1781,7 @@ def edit_product(tenant_id, product_id):
                         targeting_template = json.loads(targeting_template_json) if targeting_template_json else {}
                     except json.JSONDecodeError:
                         targeting_template = {}
+                    _apply_selectable_key_value_pairs(targeting_template, form_data)
 
                     # If targeting template has key_value_pairs, copy to implementation_config for GAM
                     if targeting_template.get("key_value_pairs"):

@@ -423,6 +423,7 @@ Target users based on local weather conditions for maximum relevance.</div>
         {# Enhanced targeting selector with OR/AND operators and include/exclude #}
         {% include 'components/targeting_selector_widget.html' %}
         <input type="hidden" id="targeting-data" name="targeting_template" value='{{ (form_data.targeting_template | e) if form_data and form_data.targeting_template else (product.targeting_template | tojson if product and product.targeting_template else "{}") }}'>
+        {% include 'components/selectable_targeting_options.html' %}
 
         <!-- Product Details (AdCP Compliance) -->
         <h3 style="margin-top: 2rem;">
