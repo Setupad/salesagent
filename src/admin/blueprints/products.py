@@ -2209,7 +2209,7 @@ def edit_product(tenant_id, product_id):
                     product=product_dict,
                     selected_format_ids=selected_format_ids,
                     inventory_synced=inventory_synced,
-                    formats=get_creative_formats(tenant_id=tenant_id),
+                    formats=[],
                     currencies=currencies,
                     assigned_inventory=assigned_inventory,
                     inventory_profiles=inventory_profiles,
