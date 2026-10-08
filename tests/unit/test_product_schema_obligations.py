@@ -202,6 +202,27 @@ class TestProductConversionValid:
         assert len(schema_product.publisher_properties) >= 1
         assert len(schema_product.pricing_options) >= 1
 
+    def test_conversion_exposes_selectable_key_value_pairs_in_ext(self):
+        product = _make_db_product(
+            targeting_template={
+                "selectable_key_value_pairs": {
+                    "sport": {
+                        "display_name": "Sport",
+                        "values": ["basketball", "football"],
+                    }
+                }
+            }
+        )
+
+        schema_product = convert_product_model_to_schema(product)
+
+        assert schema_product.model_dump()["ext"]["prebid"]["selectable_key_value_pairs"] == {
+            "sport": {
+                "display_name": "Sport",
+                "values": ["basketball", "football"],
+            }
+        }
+
     def test_conversion_missing_format_ids_raises(self):
         """Product with 0 format_ids fails conversion with ValueError.
 

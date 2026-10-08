@@ -137,6 +137,17 @@ def _make_request(**overrides) -> CreateMediaBuyRequest:
     return CreateMediaBuyRequest(**defaults)
 
 
+def _selectable_sport_targeting_template() -> dict[str, Any]:
+    return {
+        "selectable_key_value_pairs": {
+            "sport": {
+                "display_name": "Sport",
+                "values": ["basketball", "football"],
+            }
+        }
+    }
+
+
 # ===========================================================================
 # HIGH_RISK Tests
 # ===========================================================================
@@ -1001,6 +1012,49 @@ class TestMainFlowObligations:
 
         # Valid targeting overlay does not block the pipeline.
         assert isinstance(result.response, CreateMediaBuySuccess)
+
+    def test_selectable_custom_targeting_allowed_value_passes(self, integration_db):
+        """Buyer-selected custom targeting passes when declared by the product."""
+        req = _make_request(
+            packages=[
+                {
+                    "product_id": "prod_1",
+                    "budget": 5000.0,
+                    "pricing_option_id": "cpm_usd_fixed",
+                    "targeting_overlay": {
+                        "custom": {"gam": {"key_value_pairs": {"sport": ["basketball"]}}},
+                    },
+                },
+            ]
+        )
+
+        with _env() as env:
+            tenant, _principal = env.setup_default_data()
+            env.setup_product_chain(tenant, targeting_template=_selectable_sport_targeting_template())
+            result = env.call_impl(req=req)
+
+        assert isinstance(result.response, CreateMediaBuySuccess)
+
+    def test_selectable_custom_targeting_rejects_undeclared_value(self, integration_db):
+        """Buyer-selected custom targeting must match the product allowlist."""
+        req = _make_request(
+            packages=[
+                {
+                    "product_id": "prod_1",
+                    "budget": 5000.0,
+                    "pricing_option_id": "cpm_usd_fixed",
+                    "targeting_overlay": {
+                        "custom": {"gam": {"key_value_pairs": {"sport": ["hockey"]}}},
+                    },
+                },
+            ]
+        )
+
+        with _env() as env:
+            tenant, _principal = env.setup_default_data()
+            env.setup_product_chain(tenant, targeting_template=_selectable_sport_targeting_template())
+            with pytest.raises(AdCPValidationError, match="sport"):
+                env.call_impl(req=req)
 
     def test_auto_approval_determination(self, integration_db):
         """Auto-approval when tenant allows and adapter doesn't require manual approval.

@@ -332,6 +332,73 @@ def raise_if_property_targeting_violations(violations: list[str]) -> None:
         )
 
 
+def _as_value_set(values: Any) -> set[str]:
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        return {values}
+    if isinstance(values, list):
+        normalized: set[str] = set()
+        for value in values:
+            if isinstance(value, dict):
+                value_id = value.get("id") or value.get("value_id") or value.get("name")
+                if value_id is not None:
+                    normalized.add(str(value_id))
+            else:
+                normalized.add(str(value))
+        return normalized
+    return {str(values)}
+
+
+def _extract_gam_key_value_pairs(targeting_overlay: Targeting | None) -> dict[str, set[str]]:
+    if targeting_overlay is None or not targeting_overlay.custom:
+        return {}
+    gam_custom = targeting_overlay.custom.get("gam")
+    if not isinstance(gam_custom, dict):
+        return {}
+    raw_pairs = gam_custom.get("key_value_pairs") or gam_custom.get("key_values")
+    if not isinstance(raw_pairs, dict):
+        return {}
+    return {str(key): _as_value_set(values) for key, values in raw_pairs.items()}
+
+
+def validate_selectable_custom_targeting(product: "Product | None", targeting_overlay: Targeting | None) -> list[str]:
+    """Validate buyer-selected custom key/value targeting against a product allowlist."""
+    requested_pairs = _extract_gam_key_value_pairs(targeting_overlay)
+    if not requested_pairs:
+        return []
+
+    targeting_template = getattr(product, "targeting_template", None) if product is not None else None
+    selectable_pairs = (
+        targeting_template.get("selectable_key_value_pairs", {}) if isinstance(targeting_template, dict) else {}
+    )
+    if not isinstance(selectable_pairs, dict) or not selectable_pairs:
+        return ["Product does not declare buyer-selectable custom targeting"]
+
+    violations: list[str] = []
+    for key, requested_values in requested_pairs.items():
+        option = selectable_pairs.get(key)
+        if option is None:
+            violations.append(f"custom targeting key '{key}' is not selectable for this product")
+            continue
+        allowed_values = _as_value_set(option.get("values") if isinstance(option, dict) else option)
+        disallowed_values = requested_values - allowed_values
+        if disallowed_values:
+            values = ", ".join(sorted(disallowed_values))
+            violations.append(f"custom targeting key '{key}' has undeclared value(s): {values}")
+    return violations
+
+
+def raise_if_selectable_custom_targeting_violations(violations: list[str]) -> None:
+    if violations:
+        raise AdCPValidationError(
+            f"Targeting validation failed: {'; '.join(violations)}",
+            field=package_field_path("targeting_overlay.custom"),
+            details={"violations": violations},
+            suggestion="Use custom targeting keys and values declared by get_products for this product.",
+        )
+
+
 def validate_overlay_targeting(targeting: Targeting) -> list[str]:
     """Validate that targeting only uses allowed overlay dimensions.
 

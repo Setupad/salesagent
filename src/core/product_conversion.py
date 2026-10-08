@@ -12,6 +12,7 @@ V3 Migration Notes:
 """
 
 import logging
+from typing import Any
 
 from adcp import (
     CpaPricingOption,
@@ -37,6 +38,15 @@ from src.core.schemas import Product
 logger = logging.getLogger(__name__)
 
 V3_VERSION = Version("3.0.0")
+
+
+def _add_prebid_product_extension(product_data: dict[str, Any], extension_key: str, extension_value: Any) -> None:
+    """Add a Prebid-specific product extension without replacing other ext data."""
+    ext = dict(product_data.get("ext") or {})
+    prebid_ext = dict(ext.get("prebid") or {})
+    prebid_ext[extension_key] = extension_value
+    ext["prebid"] = prebid_ext
+    product_data["ext"] = ext
 
 
 def needs_v2_compat(adcp_version: str | None) -> bool:
@@ -520,6 +530,9 @@ def convert_product_model_to_schema(product_model, adapter_type: str | None = No
         device_targets = targeting_template.get("device_targets")
         if isinstance(device_targets, list):
             product_data["device_types"] = device_targets
+        selectable_key_value_pairs = targeting_template.get("selectable_key_value_pairs")
+        if isinstance(selectable_key_value_pairs, dict) and selectable_key_value_pairs:
+            _add_prebid_product_extension(product_data, "selectable_key_value_pairs", selectable_key_value_pairs)
 
     return Product(**product_data)
 

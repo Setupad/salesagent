@@ -134,6 +134,7 @@ class MediaBuyCreateEnv(IntegrationEnv):
         currency: str = "USD",
         with_pricing: bool = True,
         format_ids: list[dict[str, str]] | None = None,
+        targeting_template: dict[str, Any] | None = None,
     ) -> tuple:
         """Seed a real PropertyTag ("all_inventory") + Product + PricingOption row set.
 
@@ -156,6 +157,7 @@ class MediaBuyCreateEnv(IntegrationEnv):
             product_id=product_id,
             delivery_type="non_guaranteed",
             format_ids=format_ids,
+            targeting_template=targeting_template if targeting_template is not None else {"geo": ["US"]},
             property_tags=["all_inventory"],
         )
         pricing_option = None
