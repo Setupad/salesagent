@@ -12,7 +12,6 @@ SDK 5.7 type:ignore tracking (adcontextprotocol/adcp-client-python#913):
 import asyncio
 import concurrent.futures
 import logging
-import os
 import time
 from typing import TYPE_CHECKING
 
@@ -26,11 +25,10 @@ from adcp.types import (
     UrlFormatAsset,
     VideoFormatAsset,
 )
-from adcp.types import (
-    Error as AdCPResponseError,
-)
 from adcp.types import Format as AdcpFormat
 from adcp.utils.format_assets import get_format_assets
+
+from src.core.config import LimitSettings
 
 # Format subclass preserved through backward-compatibility helper (PEP 695 type param below).
 from src.core.exceptions import AdCPSalesAgentError, AdCPServiceUnavailableError
@@ -63,7 +61,7 @@ ADVERTISED_CREATIVE_AGENT_CAPABILITIES: tuple[CreativeAgentCapability, ...] = (
     CreativeAgentCapability.preview,
 )
 
-LIST_CREATIVE_FORMATS_FETCH_TIMEOUT_SECONDS = float(os.getenv("LIST_CREATIVE_FORMATS_FETCH_TIMEOUT", "15"))
+LIST_CREATIVE_FORMATS_FETCH_TIMEOUT_SECONDS = LimitSettings().list_creative_formats_fetch_timeout
 
 
 def _creative_format_fetch_timeout_result(timeout_seconds: float):

@@ -40,6 +40,7 @@ do not use the harness.
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -64,6 +65,7 @@ from src.core.schemas import (
     CreateMediaBuySuccess,
     PricingOption,
 )
+from src.core.tools._wire import to_wire
 from tests.factories.creative_asset import build_assets, image_spec
 from tests.harness.media_buy_create import MediaBuyCreateEnv
 from tests.helpers.envelope_assertions import assert_envelope_shape, raises_adcp
@@ -924,12 +926,12 @@ class TestMainFlowObligations:
             ]
         )
 
-        with _env() as env:
+        with MediaBuyCreateEnv() as env:
             tenant, _principal = env.setup_default_data()
             env.setup_product_chain(tenant, targeting_template=_selectable_sport_targeting_template())
             result = env.call_impl(req=req)
 
-        assert isinstance(result.response, CreateMediaBuySuccess)
+        assert isinstance(result, CreateMediaBuySuccess)
 
     def test_selectable_custom_targeting_rejects_undeclared_value(self, integration_db):
         """Buyer-selected custom targeting must match the product allowlist."""
@@ -946,11 +948,19 @@ class TestMainFlowObligations:
             ]
         )
 
-        with _env() as env:
+        with MediaBuyCreateEnv() as env:
             tenant, _principal = env.setup_default_data()
             env.setup_product_chain(tenant, targeting_template=_selectable_sport_targeting_template())
-            with pytest.raises(AdCPValidationError, match="sport"):
+            with raises_adcp(AdCPValidationError) as raised:
                 env.call_impl(req=req)
+
+        assert_envelope_shape(
+            to_wire(raised.value.response),
+            "VALIDATION_ERROR",
+            recovery="correctable",
+            field="packages",
+            details={"reasons": ["custom targeting key 'sport' has undeclared value(s): hockey"]},
+        )
 
     def test_auto_approval_determination(self, integration_db):
         """Auto-approval when tenant allows and adapter doesn't require manual approval.

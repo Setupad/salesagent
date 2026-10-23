@@ -7,8 +7,8 @@ from typing import Any
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from src.core.mcp_auth_middleware import AUTH_OPTIONAL_TOOLS
 from src.core.oauth_service import get_mcp_oauth_issuer
+from src.core.tools.registry import TOOLS
 
 
 class MCPOAuthChallengeMiddleware:
@@ -57,7 +57,7 @@ def _is_unauthenticated_protected_tool_call(scope: Scope, body: bytes) -> bool:
         return False
 
     tool_name = _extract_tool_name(body)
-    return tool_name is not None and tool_name not in AUTH_OPTIONAL_TOOLS
+    return tool_name is not None and (tool_name not in TOOLS or TOOLS[tool_name].requires_credential())
 
 
 def _has_auth_header(scope: Scope) -> bool:

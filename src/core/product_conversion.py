@@ -37,6 +37,7 @@ from src.core.schemas import (
 
 logger = logging.getLogger(__name__)
 
+
 def _add_prebid_product_extension(product_data: dict[str, Any], extension_key: str, extension_value: Any) -> None:
     """Add a Prebid-specific product extension without replacing other ext data."""
     ext = dict(product_data.get("ext") or {})
@@ -44,7 +45,6 @@ def _add_prebid_product_extension(product_data: dict[str, Any], extension_key: s
     prebid_ext[extension_key] = extension_value
     ext["prebid"] = prebid_ext
     product_data["ext"] = ext
-
 
 
 def convert_pricing_option_to_adcp(

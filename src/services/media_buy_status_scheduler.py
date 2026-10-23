@@ -20,6 +20,7 @@ from src.core.config import get_settings
 from src.core.database.database_session import get_db_session
 from src.core.database.models import Creative, CreativeAssignment, MediaBuy, PersistedMediaBuyStatus
 from src.core.database.repositories import MediaBuyRepository
+from src.core.database.repositories.creative import CreativeAssignmentRepository
 from src.core.tools._media_buy_transitions import resolve_flight_window_status
 
 logger = logging.getLogger(__name__)
@@ -182,8 +183,7 @@ class MediaBuyStatusScheduler:
         return None
 
     def _has_creative_assignments(self, media_buy: MediaBuy, session) -> bool:
-        stmt = select(CreativeAssignment).filter_by(tenant_id=media_buy.tenant_id, media_buy_id=media_buy.media_buy_id)
-        return session.scalars(stmt).first() is not None
+        return bool(CreativeAssignmentRepository(session, media_buy.tenant_id).get_by_media_buy(media_buy.media_buy_id))
 
     def _are_creatives_approved(self, media_buy: MediaBuy, session) -> bool:
         """Check if all creatives for a media buy are approved.

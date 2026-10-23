@@ -293,9 +293,9 @@ def test_every_precheck_handles_the_index_verdict():
 #: — a real UNIQUE constraint (``e7a2c40b91d5_add_signing_keys_table``), not a PK
 #: subset: ``signing_keys`` keys on a surrogate ``id``, so the natural key is
 #: separately declared and separately enforced.
-EXPECTED_DECLARED_TUPLES = 21
-EXPECTED_DECLARED_MODELS = 18
-EXPECTED_FORM_COUNTS = {"unique-constraint": 13, "unique-index": 5, "column-unique": 3}
+EXPECTED_DECLARED_TUPLES = 22
+EXPECTED_DECLARED_MODELS = 19
+EXPECTED_FORM_COUNTS = {"unique-constraint": 14, "unique-index": 5, "column-unique": 3}
 
 #: Excluded, never truncated — the column subset these name is NOT unique in the DB.
 EXPECTED_UNUSABLE = {

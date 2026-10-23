@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import os
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ from typing import Any
 
 import jwt
 
+from src.core.config import get_settings
 from src.core.domain_config import get_sales_agent_domain, get_sales_agent_url
 
 DEFAULT_MCP_OAUTH_SCOPE = "mcp:principal"
@@ -209,7 +209,7 @@ def validate_mcp_access_token(
 
 def get_mcp_oauth_issuer() -> str:
     """Return the issuer URL for first-party MCP OAuth tokens."""
-    if issuer := os.environ.get("MCP_OAUTH_ISSUER"):
+    if issuer := get_settings().auth.mcp_oauth_issuer:
         return issuer.rstrip("/")
     if url := get_sales_agent_url(_get_public_protocol()):
         return url.rstrip("/")
@@ -218,7 +218,7 @@ def get_mcp_oauth_issuer() -> str:
 
 def get_mcp_oauth_audience() -> str:
     """Return the canonical MCP resource audience for OAuth access tokens."""
-    if audience := os.environ.get("MCP_OAUTH_AUDIENCE"):
+    if audience := get_settings().auth.mcp_oauth_audience:
         return audience.rstrip("/")
     if url := get_sales_agent_url(_get_public_protocol()):
         return f"{url.rstrip('/')}/mcp/"
@@ -231,7 +231,7 @@ def _validate_oauth_claims(payload: dict[str, Any]) -> None:
 
 
 def _get_signing_key() -> str:
-    signing_key = os.environ.get("MCP_OAUTH_JWT_SECRET")
+    signing_key = get_settings().auth.mcp_oauth_jwt_secret
     if signing_key:
         return signing_key
     raise RuntimeError("MCP_OAUTH_JWT_SECRET must be set before issuing or validating MCP OAuth tokens")

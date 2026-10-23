@@ -126,16 +126,16 @@ COPY config/nginx/nginx-development.conf /etc/nginx/nginx-development.conf
 # -P mode never follows a symlink argument into its target, so chowning /var/run only
 # relabels the symlink itself and leaves the real directory (where nginx writes its
 # pidfile) root-owned.
-RUN mkdir -p /home/app/.cache /var/log/nginx /var/run && \
+ENV HOME=/home/app
+RUN mkdir -p "$HOME/.cache" /var/log/nginx /var/run && \
     chown app:app /app /opt/venv && \
-    chown -R app:app /home/app /var/log/nginx /var/lib/nginx /run /etc/nginx/nginx.conf
+    chown -R app:app "$HOME" /var/log/nginx /var/lib/nginx /run /etc/nginx/nginx.conf
 
 # Venv on PATH; PYTHONPATH points at bind-mounted source in dev compose
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 ENV PYTHONUNBUFFERED=1
-ENV HOME=/home/app
-ENV XDG_CACHE_HOME=/home/app/.cache
+ENV XDG_CACHE_HOME=$HOME/.cache
 
 # Default port
 ENV ADCP_PORT=8080

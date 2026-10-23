@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -189,11 +189,7 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
         return _oauth_error("invalid_grant", "Authorization code is expired or already used", 400)
     if authorization_code.code_challenge_method != "S256":
         return _oauth_error("invalid_grant", "Unsupported authorization code challenge method", 400)
-    try:
-        pkce_valid = verify_pkce_s256(str(form.get("code_verifier") or ""), authorization_code.code_challenge)
-    except UnicodeEncodeError:
-        pkce_valid = False
-    if not pkce_valid:
+    if not _valid_pkce_verifier(str(form.get("code_verifier") or ""), authorization_code.code_challenge):
         return _oauth_error("invalid_grant", "PKCE code verifier is invalid", 400)
 
     if not _mark_authorization_code_used(hash_authorization_code(str(form.get("code") or ""))):
@@ -209,6 +205,13 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
     )
 
     return _oauth_token_response(access_token, authorization_code.scopes)
+
+
+def _valid_pkce_verifier(code_verifier: str, code_challenge: str) -> bool:
+    try:
+        return verify_pkce_s256(code_verifier, code_challenge)
+    except UnicodeEncodeError:
+        return False
 
 
 def _authenticate_confidential_client(request: Request, form) -> _OAuthClientAuthResult | JSONResponse:
@@ -354,7 +357,7 @@ def _append_query_params(url: str, params: dict[str, str]) -> str:
     parsed = urlsplit(url)
     query = parse_qsl(parsed.query, keep_blank_values=True)
     query.extend(params.items())
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+    return parsed._replace(query=urlencode(query)).geturl()
 
 
 def _as_utc(value: datetime) -> datetime:

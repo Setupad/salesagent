@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any
 
+from src.core.config import LimitSettings
 from src.core.database.database_session import get_db_session
 from src.core.database.repositories import AdapterConfigRepository, CurrencyLimitRepository, ProductRepository
 
 logger = logging.getLogger(__name__)
 
-PRODUCT_FORECAST_REFRESH_INTERVAL_SECONDS = int(os.getenv("PRODUCT_FORECAST_REFRESH_INTERVAL") or "86400")
+PRODUCT_FORECAST_REFRESH_INTERVAL_SECONDS = LimitSettings().product_forecast_refresh_interval
 
 
 @dataclass(frozen=True)

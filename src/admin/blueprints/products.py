@@ -30,7 +30,7 @@ from src.core.database.models import (
 from src.core.database.product_pricing import get_product_pricing_options
 from src.core.database.repositories.media_buy import MediaBuyRepository
 from src.core.database.repositories.principal import PrincipalRepository
-from src.core.database.repositories.product import ProductRepository
+from src.core.database.repositories.uow import ProductUoW
 from src.core.schemas import Format
 from src.services.background_sync_service import start_product_forecast_refresh_background
 from src.services.gam_product_config_service import GAMProductConfigService
@@ -927,9 +927,7 @@ def add_product(tenant_id):
                     first_option = pricing_options_data[0]
                     first_pricing_model = first_option.pricing_model
                     # Determine delivery_type based on is_fixed
-                    if first_option.is_fixed or (
-                        adapter_type == "google_ad_manager" and first_pricing_model == "vcpm"
-                    ):
+                    if first_option.is_fixed or (adapter_type == "google_ad_manager" and first_pricing_model == "vcpm"):
                         delivery_type = "guaranteed"
                     else:
                         delivery_type = "non_guaranteed"
@@ -2227,8 +2225,9 @@ def edit_product(tenant_id, product_id):
 def refresh_product_forecast(tenant_id, product_id):
     """Manually refresh a product's cached GAM availability forecast."""
     try:
-        with get_db_session() as db_session:
-            product = ProductRepository(db_session, tenant_id).get_by_id(product_id)
+        with ProductUoW(tenant_id) as uow:
+            assert uow.products is not None
+            product = uow.products.get_by_id(product_id)
             if not product:
                 return jsonify({"error": "Product not found"}), 404
 

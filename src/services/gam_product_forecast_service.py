@@ -140,8 +140,8 @@ def map_availability_forecast_to_adcp(
         "forecast_range_unit": "availability",
         "method": "modeled",
         "currency": currency,
-        "generated_at": generated_at.isoformat(),
-        "valid_until": valid_until.isoformat(),
+        "generated_at": _to_wire_datetime(generated_at),
+        "valid_until": _to_wire_datetime(valid_until),
         "ext": {
             "forecast_period": {
                 "duration_days": duration_days,
@@ -162,7 +162,8 @@ def map_availability_forecast_to_adcp(
             }
         ],
     }
-    return DeliveryForecast.model_validate(forecast).model_dump(mode="json", exclude_none=True)
+    DeliveryForecast.model_validate(forecast)
+    return forecast
 
 
 def _to_wire_datetime(value: datetime) -> str:

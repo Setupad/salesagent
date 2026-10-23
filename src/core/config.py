@@ -255,6 +255,9 @@ class AuthSettings(BaseSettings):
     oauth_client_id: str | None = None
     oauth_client_secret: str | None = None
     oauth_scopes: str = "openid email profile"
+    mcp_oauth_issuer: str | None = None
+    mcp_oauth_audience: str | None = None
+    mcp_oauth_jwt_secret: str | None = None
     super_admin_emails: str = ""
     super_admin_domains: str = ""
     tenant_management_emails: str | None = None
@@ -345,6 +348,8 @@ class LimitSettings(BaseSettings):
     idempotency_max_inserts_per_window: int = 300
     delivery_webhook_interval: int = 3600
     media_buy_status_check_interval: int = 60
+    list_creative_formats_fetch_timeout: float = 15.0
+    product_forecast_refresh_interval: int = 86400
     adcp_outbound_allow_private: bool = False
     adcp_outbound_backoff_base_seconds: float = Field(default=1.0, gt=0)
     adcp_webhook_delivery_timeout_seconds: float = Field(default=10.0, gt=0)

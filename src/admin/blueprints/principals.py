@@ -269,22 +269,17 @@ def edit_principal(tenant_id, principal_id):
             has_gam = tenant.is_gam_tenant
 
             # Extract existing GAM advertiser ID if present
-            existing_gam_id = None
-            if principal.platform_mappings:
-                mappings = principal.platform_mappings if isinstance(principal.platform_mappings, dict) else {}
-                gam_mapping = mappings.get("google_ad_manager", {})
-                existing_gam_id = gam_mapping.get("advertiser_id")
+            mappings = principal.platform_mappings if isinstance(principal.platform_mappings, dict) else {}
+            existing_gam_id = mappings.get("google_ad_manager", {}).get("advertiser_id")
 
             oauth_client = OAuthClientRepository(db_session).get_active_client(
                 tenant_id=tenant_id,
                 principal_id=principal_id,
                 client_id=request.args.get("oauth_client_id", ""),
+            ) or OAuthClientRepository(db_session).get_active_client_by_principal(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
             )
-            if not oauth_client:
-                oauth_client = OAuthClientRepository(db_session).get_active_client_by_principal(
-                    tenant_id=tenant_id,
-                    principal_id=principal_id,
-                )
 
             return render_template(
                 "create_principal.html",
@@ -333,23 +328,10 @@ def edit_principal(tenant_id, principal_id):
             principal.platform_mappings = platform_mappings
             principal.updated_at = datetime.now(UTC)
 
-            if "oauth_redirect_uris" in request.form:
-                oauth_redirect_uris, redirect_uri_error = _parse_oauth_redirect_uris(
-                    request.form.get("oauth_redirect_uris", "")
-                )
-                if redirect_uri_error:
-                    flash(redirect_uri_error, "error")
-                    return redirect(
-                        url_for("principals.edit_principal", tenant_id=tenant_id, principal_id=principal_id)
-                    )
-
-                oauth_client = OAuthClientRepository(db_session).get_active_client_by_principal(
-                    tenant_id=tenant_id,
-                    principal_id=principal_id,
-                )
-                if oauth_client:
-                    oauth_client.redirect_uris = oauth_redirect_uris
-                    oauth_client.updated_at = datetime.now(UTC)
+            redirect_uri_error = _update_oauth_redirect_uris(db_session, tenant_id, principal_id)
+            if redirect_uri_error:
+                flash(redirect_uri_error, "error")
+                return redirect(url_for("principals.edit_principal", tenant_id=tenant_id, principal_id=principal_id))
             db_session.commit()
 
             flash(f"Advertiser '{principal.name}' updated successfully", "success")
@@ -361,17 +343,31 @@ def edit_principal(tenant_id, principal_id):
         return redirect(url_for("principals.edit_principal", tenant_id=tenant_id, principal_id=principal_id))
 
 
+def _update_oauth_redirect_uris(db_session, tenant_id: str, principal_id: str) -> str | None:
+    if "oauth_redirect_uris" not in request.form:
+        return None
+    redirect_uris, error = _parse_oauth_redirect_uris(request.form.get("oauth_redirect_uris", ""))
+    if error:
+        return error
+    oauth_client = OAuthClientRepository(db_session).get_active_client_by_principal(
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+    )
+    if oauth_client:
+        oauth_client.redirect_uris = redirect_uris
+        oauth_client.updated_at = datetime.now(UTC)
+    return None
+
+
 def _parse_oauth_redirect_uris(raw_value: str) -> tuple[list[str], str | None]:
     redirect_uris: list[str] = []
-    seen: set[str] = set()
     for line in raw_value.splitlines():
         redirect_uri = line.strip()
-        if not redirect_uri or redirect_uri in seen:
+        if not redirect_uri or redirect_uri in redirect_uris:
             continue
         validation_error = _validate_oauth_redirect_uri(redirect_uri)
         if validation_error:
             return [], validation_error
-        seen.add(redirect_uri)
         redirect_uris.append(redirect_uri)
     return redirect_uris, None
 

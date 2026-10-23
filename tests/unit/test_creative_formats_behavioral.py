@@ -483,6 +483,7 @@ def _call_impl_raw(
     registry_side_effect: Exception | None = None,
     errors: list | None = None,
     agents: list | None = None,
+    fetch_delay: float = 0,
 ):
     """Call _list_creative_formats_impl and return the full response (not just formats).
 
@@ -515,9 +516,11 @@ def _call_impl_raw(
         fetch_result = FormatFetchResult(formats=list(formats), errors=errors or [])
 
         async def mock_list_formats_with_errors(**kwargs):
+            await asyncio.sleep(fetch_delay)
             return fetch_result
 
         async def mock_list_formats(**kwargs):
+            await asyncio.sleep(fetch_delay)
             return list(formats)
 
         mock_reg.list_all_formats_with_errors = mock_list_formats_with_errors
@@ -574,31 +577,12 @@ class TestPartialAgentFailureReturnsFormatsAndErrors:
         assert "Connection refused" not in response.errors[0].message
         assert "https://" not in response.errors[0].message
 
-    def test_format_discovery_timeout_returns_agent_error(self, caplog):
+    def test_format_discovery_timeout_returns_agent_error(self, caplog, monkeypatch):
         """A hung creative agent fetch must return an error instead of blocking the server."""
-        from src.core.tools.creative_formats import _list_creative_formats_impl
-
-        req = ListCreativeFormatsRequest()
-        identity = PrincipalFactory.make_public_identity(tenant=MOCK_TENANT)
-
-        with (
-            patch("src.core.creative_agent_registry.get_creative_agent_registry") as mock_registry,
-            patch("src.core.tools.creative_formats.get_audit_logger") as mock_audit,
-            patch("src.core.tools.creative_formats.LIST_CREATIVE_FORMATS_FETCH_TIMEOUT_SECONDS", 0.01),
-        ):
-            mock_reg = MagicMock()
-
-            async def hung_list_formats(**kwargs):
-                await asyncio.sleep(0.2)
-
-            mock_reg.list_all_formats_with_errors = hung_list_formats
-            mock_reg.list_all_formats = hung_list_formats
-            mock_registry.return_value = mock_reg
-            mock_audit.return_value = MagicMock()
-
-            started = time.monotonic()
-            response = _list_creative_formats_impl(req, identity)
-            elapsed = time.monotonic() - started
+        monkeypatch.setattr("src.core.tools.creative_formats.LIST_CREATIVE_FORMATS_FETCH_TIMEOUT_SECONDS", 0.01)
+        started = time.monotonic()
+        response = _call_impl_raw([], fetch_delay=0.2)
+        elapsed = time.monotonic() - started
 
         assert elapsed < 0.15
         assert response.formats == []
