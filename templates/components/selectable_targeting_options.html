@@ -1,12 +1,25 @@
-{% set selectable_targeting_json = form_data.selectable_key_value_pairs if form_data and form_data.selectable_key_value_pairs else (product.targeting_template.selectable_key_value_pairs | tojson(indent=2) if product and product.targeting_template and product.targeting_template.selectable_key_value_pairs else '') %}
+{% set selectable_targeting_json = form_data.get('selectable_key_value_pairs', '') if form_data and 'selectable_key_value_pairs' in form_data else (product.targeting_template.selectable_key_value_pairs | tojson if product and product.targeting_template and product.targeting_template.selectable_key_value_pairs else '') %}
 
-<div class="form-group">
+<div class="form-group selectable-targeting-section">
+    {% if tenant.ad_server in ['gam', 'google_ad_manager'] %}
+    <h4>Buyer-selectable custom targeting</h4>
+    <input type="hidden" id="selectable_key_value_pairs" name="selectable_key_value_pairs" value="{{ selectable_targeting_json | forceescape }}">
+    <div id="selectable-targeting-editor"
+         data-tenant-id="{{ tenant_id }}"
+         data-script-root="{{ request.script_root }}"></div>
+    <link rel="stylesheet" href="{{ url_for('static', filename='selectable_targeting.css') }}">
+    <script src="{{ url_for('static', filename='js/selectable_targeting.js') }}"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const container = document.getElementById('selectable-targeting-editor');
+        new SelectableTargetingEditor(container, document.getElementById('selectable_key_value_pairs'));
+    });
+    </script>
+    {% else %}
     <label for="selectable_key_value_pairs">Buyer-selectable custom targeting</label>
     <textarea id="selectable_key_value_pairs"
               name="selectable_key_value_pairs"
               rows="7"
               placeholder='{"sport":{"display_name":"Sport","values":["basketball","football"]}}'>{{ selectable_targeting_json }}</textarea>
-    <small style="display: block; margin-top: 0.35rem; color: #666;">
-        Declare key/value options buyers may choose in create_media_buy targeting_overlay.custom.gam.key_value_pairs.
-    </small>
+    {% endif %}
 </div>

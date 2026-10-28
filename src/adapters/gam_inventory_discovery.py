@@ -208,6 +208,17 @@ class CustomTargetingValue:
 
 
 @dataclass
+class CustomTargetingValuePage:
+    values: list[CustomTargetingValue]
+    total_count: int
+    next_offset: int | None
+
+    @property
+    def has_more(self) -> bool:
+        return self.next_offset is not None
+
+
+@dataclass
 class AudienceSegment:
     """Represents a GAM audience segment (first-party or third-party)."""
 
@@ -515,37 +526,56 @@ class GAMInventoryDiscovery:
             key_id: The custom targeting key ID
             max_values: Optional maximum number of values to fetch
         """
+        discovered_values: list[CustomTargetingValue] = []
+        offset = 0
+        while max_values is None or len(discovered_values) < max_values:
+            limit = min(1000, max_values - len(discovered_values)) if max_values is not None else 1000
+            page = self.discover_custom_targeting_values_page(key_id, offset=offset, limit=limit)
+            discovered_values.extend(page.values)
+            if page.next_offset is None:
+                break
+            offset = page.next_offset
+        return discovered_values
+
+    def discover_custom_targeting_values_page(
+        self, key_id: str, *, offset: int = 0, limit: int = 250
+    ) -> CustomTargetingValuePage:
+        if offset < 0 or not 1 <= limit <= 1000:
+            from src.core.exceptions import AdCPConfigurationError
+
+            raise AdCPConfigurationError()
+
         custom_targeting_service = self.client.GetService("CustomTargetingService")
-        discovered_values = []
-
         statement_builder = (
-            ad_manager.StatementBuilder().Where("customTargetingKeyId = :keyId").WithBindVariable("keyId", int(key_id))
+            ad_manager.StatementBuilder()
+            .Where("customTargetingKeyId = :keyId")
+            .WithBindVariable("keyId", int(key_id))
+            .OrderBy("id")
+            .Offset(offset)
         )
-
-        # Apply limit if specified
-        if max_values:
-            statement_builder.limit = max_values
-
-        while True:
-            response = custom_targeting_service.getCustomTargetingValuesByStatement(statement_builder.ToStatement())
-
-            if "results" in response and response["results"]:
-                for gam_value in response["results"]:
-                    # Convert SUDS object to dictionary
-                    gam_value_dict = serialize_object(gam_value)
-                    value = CustomTargetingValue.from_gam_object(gam_value_dict)
-                    discovered_values.append(value)
-
-                    # Check if we've hit the limit
-                    if max_values and len(discovered_values) >= max_values:
-                        logger.info(f"Reached limit of {max_values} values for key {key_id}")
-                        return discovered_values
-
-                statement_builder.offset += len(response["results"])
-            else:
+        values: list[CustomTargetingValue] = []
+        total_count = 0
+        while len(values) < limit:
+            statement_builder.limit = min(500, limit - len(values))
+            response = serialize_object(
+                custom_targeting_service.getCustomTargetingValuesByStatement(statement_builder.ToStatement())
+            )
+            total_count = int(response["totalResultSetSize"])
+            results = response.get("results") or []
+            if not results:
+                break
+            values.extend(CustomTargetingValue.from_gam_object(value) for value in results)
+            statement_builder.offset += len(results)
+            if statement_builder.offset >= total_count:
                 break
 
-        return discovered_values
+        if len(values) < limit and offset + len(values) < total_count:
+            from src.core.exceptions import AdCPConfigurationError
+
+            raise AdCPConfigurationError()
+
+        next_offset = offset + len(values) if values and offset + len(values) < total_count else None
+        return CustomTargetingValuePage(values=values, total_count=total_count, next_offset=next_offset)
 
     @with_retry(operation_name="discover_audience_segments")
     def discover_audience_segments(

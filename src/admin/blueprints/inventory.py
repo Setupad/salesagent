@@ -2,6 +2,7 @@
 
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from flask import Blueprint, jsonify, render_template, request, session
 from sqlalchemy import String, func, or_, select
@@ -13,10 +14,37 @@ from src.core.database.database_session import get_db_session
 from src.core.database.models import GAMInventory, GAMOrder, MediaBuy, Tenant
 from src.core.database.repositories.principal import PrincipalRepository
 
+if TYPE_CHECKING:
+    from src.adapters.gam_inventory_discovery import CustomTargetingValue
+
 logger = logging.getLogger(__name__)
 
 # Create blueprint
 inventory_bp = Blueprint("inventory", __name__)
+
+
+def _parse_targeting_values_paging(offset: str | None, limit: str | None) -> tuple[int, int]:
+    default_limit = 1000 if offset is None and limit is None else 250
+    parsed_offset = int(offset) if offset is not None else 0
+    parsed_limit = int(limit) if limit is not None else default_limit
+    if parsed_offset < 0 or not 1 <= parsed_limit <= 1000:
+        raise ValueError("offset must be non-negative and limit must be between 1 and 1000")
+    return parsed_offset, parsed_limit
+
+
+def _format_targeting_values(values: list["CustomTargetingValue"], key_id: str, key_name: str) -> list[dict[str, str]]:
+    return [
+        {
+            "id": value.id,
+            "name": value.name,
+            "display_name": value.display_name or value.name,
+            "match_type": value.match_type or "EXACT",
+            "status": value.status or "ACTIVE",
+            "key_id": key_id,
+            "key_name": key_name,
+        }
+        for value in values
+    ]
 
 
 @inventory_bp.route("/tenant/<tenant_id>/targeting")
@@ -175,8 +203,17 @@ def get_targeting_values(tenant_id, key_id):
         key_id: Custom targeting key ID
 
     Returns:
-        JSON array of custom targeting values with their metadata
+        Values, count, total_count, next_offset, and has_more. Without paging
+        parameters, return at most 1000 values. With either parameter, default
+        to offset 0 and limit 250. The maximum limit is 1000.
     """
+    try:
+        offset, limit = _parse_targeting_values_paging(request.args.get("offset"), request.args.get("limit"))
+    except ValueError:
+        return jsonify(
+            {"error": "offset must be a non-negative integer and limit must be an integer from 1 to 1000"}
+        ), 400
+
     try:
         with get_db_session() as db_session:
             from src.core.database.models import GAMInventory, Tenant
@@ -280,25 +317,19 @@ def get_targeting_values(tenant_id, key_id):
             # Create inventory discovery instance
             gam_client = GAMInventoryDiscovery(client=gam_ad_manager_client, tenant_id=tenant_id)
 
-            # Fetch values from GAM (max 1000 to avoid timeout)
-            gam_values = gam_client.discover_custom_targeting_values_for_key(key_id, max_values=1000)
+            page = gam_client.discover_custom_targeting_values_page(key_id, offset=offset, limit=limit)
 
-            # Transform to frontend format
-            values = []
-            for gam_value in gam_values:
-                values.append(
-                    {
-                        "id": gam_value.id,
-                        "name": gam_value.name,
-                        "display_name": gam_value.display_name or gam_value.name,
-                        "match_type": gam_value.match_type or "EXACT",
-                        "status": gam_value.status or "ACTIVE",
-                        "key_id": key_id,
-                        "key_name": key_row.name,
-                    }
-                )
+            values = _format_targeting_values(page.values, key_id, key_row.name)
 
-            return jsonify({"values": values, "count": len(values)})
+            return jsonify(
+                {
+                    "values": values,
+                    "count": len(values),
+                    "total_count": page.total_count,
+                    "next_offset": page.next_offset,
+                    "has_more": page.has_more,
+                }
+            )
 
     except Exception as e:
         logger.error(f"Error fetching targeting values for key {key_id}: {e}", exc_info=True)

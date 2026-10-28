@@ -2186,6 +2186,7 @@ def edit_product(tenant_id, product_id):
                 return render_template(
                     "add_product_gam.html",
                     tenant_id=tenant_id,
+                    tenant=tenant,
                     product=product_dict,
                     selected_format_ids=selected_format_ids,
                     inventory_synced=inventory_synced,

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Buyer-selectable targeting browser check</title>
+    <link rel="stylesheet" href="../../static/selectable_targeting.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: sans-serif; margin: 24px auto; padding: 0 16px; max-width: 900px; color: #242424; }
+        input, select, button { padding: 8px; border: 1px solid #aaa; border-radius: 4px; background: white; }
+        button { cursor: pointer; color: #164b36; }
+        #result { white-space: pre-wrap; overflow-wrap: anywhere; }
+    </style>
+</head>
+<body>
+    <h2>Buyer-selectable custom targeting</h2>
+    <form>
+        <input type="hidden" id="saved" value="{}">
+        <div id="editor" data-tenant-id="browser-check" data-script-root=""></div>
+        <button type="submit">Save product</button>
+    </form>
+    <pre id="result" role="status">Running browser checks...</pre>
+    <script src="../../static/js/targeting_catalog.js"></script>
+    <script src="../../static/js/selectable_targeting.js"></script>
+    <script>
+    const calls = [];
+    window.fetch = async function(url) {
+        calls.push(url);
+        const parsed = new URL(url, location.href);
+        const body = parsed.pathname.endsWith('/all')
+            ? { customKeys: [
+                { id: '12', name: 'hb_env', display_name: 'Environment', status: 'ACTIVE' },
+                { id: '13', name: 'sport', status: 'ACTIVE' }
+            ] }
+            : parsed.searchParams.get('offset') === '0'
+                ? { values: [{ name: 'amp', status: 'ACTIVE' }], has_more: true, next_offset: 250 }
+                : { values: [{ name: 'web', status: 'ACTIVE' }], has_more: false, next_offset: null };
+        return { ok: !parsed.pathname.endsWith('/13'), status: 503, json: async () => body };
+    };
+    async function check() {
+        const container = document.getElementById('editor');
+        const field = document.getElementById('saved');
+        const editor = new SelectableTargetingEditor(container, field);
+        await editor.loadKeys();
+        await editor.expose(editor.keys.find(key => key.name === 'hb_env'));
+        const expected = { hb_env: { display_name: 'Environment', values: ['amp', 'web'] } };
+        if (field.value !== JSON.stringify(expected)) throw new Error('All pages must become a name-based allowlist.');
+        if (container.querySelector('option[value="12"]')) throw new Error('A key cannot be added twice.');
+        const label = container.querySelector('.selectable-targeting-label input');
+        label.value = 'Ad environment';
+        label.dispatchEvent(new Event('input'));
+        expected.hb_env.display_name = label.value;
+        await editor.expose(editor.keys.find(key => key.name === 'sport'));
+        if (field.value !== JSON.stringify(expected)) throw new Error('GAM failure must preserve saved selections.');
+        if (!container.querySelector('[role="alert"]')) throw new Error('GAM failure must be visible.');
+        const restored = new SelectableTargetingEditor(container, field);
+        await restored.loadKeys();
+        if (container.querySelectorAll('.selectable-targeting-row').length !== 1) throw new Error('Restore failed.');
+        if (container.querySelector('.selectable-targeting-label input').value !== 'Ad environment') throw new Error('Label lost.');
+        restored.busy = true;
+        const submission = new Event('submit', { cancelable: true });
+        field.form.dispatchEvent(submission);
+        if (!submission.defaultPrevented) throw new Error('Pending values must block form submission.');
+        restored.busy = false;
+        restored.render();
+        container.querySelector('[aria-label="Remove hb_env"]').click();
+        if (field.value !== '{}') throw new Error('Remove must update submitted data.');
+        await restored.expose(restored.keys.find(key => key.name === 'hb_env'));
+        container.querySelector('details').open = true;
+        document.getElementById('result').textContent = 'PASS: all pages, duplicate prevention, label edit, error preservation, restore, pending submit, removal.';
+        document.documentElement.dataset.result = 'passed';
+    }
+    check().catch(error => {
+        document.getElementById('result').textContent = `FAIL: ${error.message}`;
+        document.documentElement.dataset.result = 'failed';
+        throw error;
+    });
+    </script>
+</body>
+</html>

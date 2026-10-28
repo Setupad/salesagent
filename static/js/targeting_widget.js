@@ -27,6 +27,7 @@ class TargetingWidget {
         this.tenantId = tenantId;
         this.container = document.getElementById(containerId);
         this.scriptRoot = scriptRoot;
+        this.catalog = TargetingCatalog.shared(tenantId, scriptRoot);
         this.selectedTargeting = {
             key_value_pairs: {
                 groups: []
@@ -137,12 +138,7 @@ class TargetingWidget {
     }
 
     async loadTargetingData() {
-        const url = `${this.scriptRoot}/api/tenant/${this.tenantId}/targeting/all`;
-        const response = await fetch(url, { credentials: 'same-origin' });
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        this.targetingData = await response.json();
+        this.targetingData = await this.catalog.data();
 
         if (this.targetingData.customKeys && !this.targetingData.custom_targeting_keys) {
             this.targetingData.custom_targeting_keys = this.targetingData.customKeys;
@@ -189,21 +185,14 @@ class TargetingWidget {
         // Load values for each key in parallel
         const loadPromises = Array.from(keyIds).map(async (keyId) => {
             try {
-                const url = `${this.scriptRoot}/api/tenant/${this.tenantId}/targeting/values/${keyId}`;
-                const response = await fetch(url, { credentials: 'same-origin' });
-                if (!response.ok) {
-                    console.warn(`[TargetingWidget] Failed to load values for key ${keyId}: HTTP ${response.status}`);
-                    return;
-                }
-                const data = await response.json();
-
-                this.loadedValuesByKey[keyId] = data.values || [];
+                const values = await this.catalog.values(keyId);
+                this.loadedValuesByKey[keyId] = values;
 
                 // Cache value metadata (id -> display_name mapping)
                 if (!this.valueMetadata[keyId]) {
                     this.valueMetadata[keyId] = {};
                 }
-                (data.values || []).forEach(val => {
+                values.forEach(val => {
                     this.valueMetadata[keyId][val.id] = val.display_name || val.name || val.id;
                 });
             } catch (error) {
@@ -672,12 +661,7 @@ class TargetingWidget {
         try {
             // Check cache first
             if (!this.loadedValuesByKey[keyId]) {
-                const url = `${this.scriptRoot}/api/tenant/${this.tenantId}/targeting/values/${keyId}`;
-                const response = await fetch(url, { credentials: 'same-origin' });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-
-                this.loadedValuesByKey[keyId] = data.values || [];
+                this.loadedValuesByKey[keyId] = await this.catalog.values(keyId);
 
                 // Cache value metadata
                 if (!this.valueMetadata[keyId]) {
