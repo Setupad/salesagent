@@ -88,15 +88,28 @@ def _bearer_challenge(code: str) -> str | None:
 
     The document URL, and the issuer in it, belong to the deployment's OAuth layer, so they
     are read from its owner rather than rebuilt here.
+
+    THE POINTER IS OPTIONAL AND THE CHALLENGE IS NOT. A deployment that names neither
+    ``SALES_AGENT_DOMAIN`` nor ``MCP_OAUTH_ISSUER`` has no protected-resource document to
+    point at, and ``get_mcp_oauth_issuer`` REFUSES rather than guess ``http://localhost:8000``
+    -- correct for a surface that publishes the issuer, wrong here. This is a refused
+    CREDENTIAL, and raising a configuration error while writing its header would replace the
+    401 with a 500 and the AUTH_MISSING envelope with CONFIGURATION_ERROR, so the caller
+    would learn nothing about the credential it presented. So the ``_or_none`` form is read:
+    no issuer means no ``resource_metadata`` parameter, leaving ``Bearer`` (plus RFC 6750
+    §3's ``error`` where one is owed), which RFC 7235 permits and which still says
+    authenticate. The pointer is an aid to discovery; the challenge is the answer.
     """
     if code not in _BEARER_ERROR_BY_CODE:
         return None
-    from src.core.oauth_service import get_mcp_oauth_issuer
+    from src.core.oauth_service import get_mcp_oauth_issuer_or_none
 
-    params = [f'resource_metadata="{get_mcp_oauth_issuer()}/.well-known/oauth-protected-resource"']
+    params = []
     if (bearer_error := _BEARER_ERROR_BY_CODE[code]) is not None:
-        params.insert(0, f'error="{bearer_error}"')
-    return f"Bearer {', '.join(params)}"
+        params.append(f'error="{bearer_error}"')
+    if issuer := get_mcp_oauth_issuer_or_none():
+        params.append(f'resource_metadata="{issuer}/.well-known/oauth-protected-resource"')
+    return f"Bearer {', '.join(params)}".rstrip()
 
 
 def _challenge_for_code(code: str | None) -> str | None:

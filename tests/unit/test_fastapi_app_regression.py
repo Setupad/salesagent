@@ -12,6 +12,10 @@ Each test targets a specific beads issue to prevent regression.
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from src.core.config import load_settings
+
 # ---------------------------------------------------------------------------
 # [P0]: Async receive callable in messageId middleware
 # ---------------------------------------------------------------------------
@@ -305,6 +309,25 @@ class TestOidcCallbackCompatibility:
 
 class TestOAuthRouteCompatibility:
     """MCP OAuth routes must remain on the composed FastAPI app."""
+
+    @pytest.fixture(autouse=True)
+    def _named_deployment(self, monkeypatch):
+        """Name this deployment, so the metadata route has an issuer to publish.
+
+        The subject here is ROUTING — that the OAuth routes are not shadowed by the admin
+        fallback mount — and a route answering at all is what proves it. But the
+        protected-resource document names the authorization server, and a deployment that
+        can name neither ``SALES_AGENT_DOMAIN`` nor ``MCP_OAUTH_ISSUER`` refuses to claim
+        an issuer at all (``src/core/oauth_service.get_mcp_oauth_issuer``) rather than
+        publish ``http://localhost:8000``. So the 200 below needs a named deployment, and
+        this supplies one the way a deployment does: the variable plus the
+        ``load_settings()`` each composition root calls, since the loader caches.
+        """
+        monkeypatch.setenv("MCP_OAUTH_ISSUER", "https://agent.example.com")
+        load_settings()
+        yield
+        monkeypatch.undo()
+        load_settings()
 
     def test_oauth_routes_are_reachable_before_admin_fallback(self):
         from starlette.testclient import TestClient

@@ -35,7 +35,8 @@ WHAT MAKES THESE ASSERTIONS NON-VACUOUS
 Every one reads the ACTUAL status line and the ACTUAL ``WWW-Authenticate`` bytes off a real
 response. Nothing in this file is mocked -- the tenant and the principal are stored rows, the
 credential is the one a buyer presents, and the issuer is set as a real deployment input
-(``MCP_OAUTH_ISSUER``, read by ``src.core.oauth_service.get_mcp_oauth_issuer``).
+(``MCP_OAUTH_ISSUER``, read by the settings loader and answered by
+``src.core.oauth_service.get_mcp_oauth_issuer``).
 
 The two challenged cases are held against controls, because either alone passes for the wrong
 reason: ``tools/list``, a tool needing no credential, and a name this seller does not
@@ -57,6 +58,7 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
+from src.core.config import load_settings
 from tests.factories.principal import plaintext_token_for
 from tests.helpers.app_state import preserved_global_app_state
 from tests.helpers.credentials import credential_headers
@@ -99,9 +101,24 @@ PUBLIC_TOOL = "list_creative_formats"
 
 
 @pytest.fixture(autouse=True)
-def _oauth_issuer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """This deployment's OAuth issuer, set the way a deployment sets it."""
+def _oauth_issuer(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """This deployment's OAuth issuer, set the way a deployment sets it.
+
+    BOTH halves of how a deployment sets it. ``MCP_OAUTH_ISSUER`` is read by the settings
+    loader, which is the process's one reader of the environment and CACHES what it read
+    (``src/core/config.py``), so a bare ``setenv`` after something has already asked for
+    settings names a variable nothing will look at again. ``load_settings()`` is the other
+    half, and it is exactly what each composition root calls at startup.
+
+    Restored the same way: ``monkeypatch.undo()`` before the reload, so the settings handed
+    back to the next file on the xdist worker are built from the ambient environment rather
+    than from this file's — the same reason ``preserved_global_app_state`` exists below.
+    """
     monkeypatch.setenv("MCP_OAUTH_ISSUER", ISSUER)
+    load_settings()
+    yield
+    monkeypatch.undo()
+    load_settings()
 
 
 @contextmanager

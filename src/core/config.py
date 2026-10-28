@@ -65,6 +65,25 @@ class RuntimeSettings(BaseSettings):
     super_admin_domain: str | None = None
     support_email: str = "support@example.com"
     adcp_agent_url: str | None = None
+    mcp_oauth_issuer: str | None = Field(
+        default=None,
+        description=(
+            "Explicit OAuth issuer URL for the first-party MCP access tokens this deployment "
+            "mints. Unset (the normal case) it is DERIVED from sales_agent_domain, which is "
+            "where a deployment already names itself; this states it outright and wins, for a "
+            "deployment whose public OAuth origin is not the host it is served at. There is NO "
+            "localhost fallback: with neither this nor sales_agent_domain set, the OAuth layer "
+            "refuses rather than claim an issuer nothing can reach"
+        ),
+    )
+    mcp_oauth_audience: str | None = Field(
+        default=None,
+        description=(
+            "Explicit RFC 8707 resource identifier for this deployment's MCP endpoint — the "
+            "audience an access token is bound to. Unset it is DERIVED the same way the issuer "
+            "is, from sales_agent_domain, and falls back to '<issuer>/mcp'"
+        ),
+    )
     adcp_multi_tenant: bool = False
     adcp_log_dir: Path = Path("logs")
     adcp_run_background_schedulers: bool = True

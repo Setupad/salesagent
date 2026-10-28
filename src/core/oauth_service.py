@@ -1,48 +1,50 @@
-"""First-party OAuth helpers for MCP client-credentials access."""
+"""First-party OAuth helpers for MCP access: the pure functions, and nothing stateful.
+
+Everything here is input-in/value-out — mint a credential, hash one, compare one, and
+answer what this deployment's OAuth origin is. The STATE an OAuth exchange produces lives
+elsewhere: an authorization code is a row
+(``src.core.database.repositories.oauth_client``) and so is an access token
+(``src.core.database.repositories.oauth_access_token``), and ``src/routes/oauth.py`` is
+what writes both.
+
+That split is what the JWT left behind. ``issue_mcp_access_token`` and
+``validate_mcp_access_token`` lived here and were the module's only stateful pair: one
+signed a set of claims about the holder, the other verified the signature and then read
+every one of those claims off the ``oauth_clients`` and ``principals`` rows anyway to check
+the client was still active and the principal still existed. So the claims were never the
+authority, only a cache of it that could disagree — and could outlive a revocation until
+``exp``. An access token is now an opaque reference (:func:`generate_access_token`) whose
+row holds the facts, which leaves this module with no signing key, no claim vocabulary and
+nothing to validate.
+"""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
-import os
 import secrets
-import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Any
 from urllib.parse import urlsplit
 
-import jwt
-
+from src.core.config import get_settings
 from src.core.domain_config import (
     get_mcp_server_url,
     get_protocol_for_domain,
     get_sales_agent_domain,
     get_sales_agent_url,
 )
+from src.core.errors.details import ConfigurationDetails
+from src.core.exceptions import AdCPConfigurationError
 
 DEFAULT_MCP_OAUTH_SCOPE = "mcp:principal"
 DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 3600
 DEFAULT_AUTHORIZATION_CODE_LIFETIME_SECONDS = 300
 _SECRET_HASH_ITERATIONS = 390_000
-_JWT_ALGORITHM = "HS256"
-_JWT_LEEWAY_SECONDS = 30
-_REQUIRED_ACCESS_TOKEN_CLAIMS = [
-    "iss",
-    "aud",
-    "sub",
-    "tenant_id",
-    "principal_id",
-    "client_id",
-    "iat",
-    "exp",
-    "jti",
-]
 
-
-class OAuthTokenValidationError(ValueError):
-    """Raised when a first-party MCP OAuth access token is invalid."""
+#: Bytes of randomness behind an access token, matching ``src.core.credentials``: the token
+#: is a reference to a stored row, so its only job is to be unguessable.
+_ACCESS_TOKEN_ENTROPY_BYTES = 32
 
 
 @dataclass(frozen=True)
@@ -58,20 +60,20 @@ class OAuthClientCredentials:
     client_secret_hash: str
 
 
-@dataclass(frozen=True)
-class MCPAccessTokenClaims:
-    """Validated claims from a first-party MCP OAuth access token."""
+def generate_access_token() -> str:
+    """Generate an opaque first-party MCP OAuth access token.
 
-    tenant_id: str
-    principal_id: str
-    client_id: str
-    scopes: list[str]
-    subject: str
-    issuer: str
-    audience: str
-    expires_at: datetime
-    issued_at: datetime
-    jwt_id: str
+    A reference, not an assertion: what makes the string usable is the
+    ``oauth_access_tokens`` row the token endpoint mints beside it, keyed by
+    ``src.core.credentials.hash_token`` of this value. So there is nothing to sign and
+    nothing for a holder to read — the client, the principal, the scopes and the RFC 8707
+    resource are columns the verifier reads from the authoritative row, which is also what
+    makes revoking one exact rather than a wait for ``exp``.
+
+    Returned to the client ONCE, in the token response. The plaintext is never logged and
+    never stored, the same rule the buyer tokens in ``src.core.credentials`` keep.
+    """
+    return f"oat_{secrets.token_urlsafe(_ACCESS_TOKEN_ENTROPY_BYTES)}"
 
 
 def generate_oauth_client_credentials() -> OAuthClientCredentials:
@@ -162,104 +164,82 @@ def verify_client_secret(client_secret: str, client_secret_hash: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
-def issue_mcp_access_token(
-    *,
-    tenant_id: str,
-    principal_id: str,
-    client_id: str,
-    issuer: str,
-    audience: str,
-    scopes: list[str] | None = None,
-    now: datetime | None = None,
-    lifetime_seconds: int = DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS,
-    signing_key: str | None = None,
-) -> str:
-    """Issue a short-lived first-party access token for the MCP resource."""
-    issued_at = now or datetime.now(UTC)
-    expires_at = issued_at + timedelta(seconds=lifetime_seconds)
-    granted_scopes = scopes or [DEFAULT_MCP_OAUTH_SCOPE]
+def get_mcp_oauth_issuer_or_none() -> str | None:
+    """The issuer URL for first-party MCP OAuth tokens, or ``None`` if there is none.
 
-    payload = {
-        "iss": issuer,
-        "aud": audience,
-        "sub": principal_id,
-        "tenant_id": tenant_id,
-        "principal_id": principal_id,
-        "client_id": client_id,
-        "scope": " ".join(granted_scopes),
-        "iat": int(issued_at.timestamp()),
-        "exp": int(expires_at.timestamp()),
-        "jti": uuid.uuid4().hex,
-    }
-    return jwt.encode(payload, signing_key or _get_signing_key(), algorithm=_JWT_ALGORITHM)
+    THE one place the issuer is decided. Two sources, and no third. ``MCP_OAUTH_ISSUER``
+    states the issuer outright and WINS, the same precedence every other
+    explicit-over-derived pair in this deployment keeps (``google_oauth_redirect_uri`` over
+    the derived callback in ``domain_config``, ``admin_domain`` over
+    ``admin.<sales_agent_domain>``, ``publisher_auto_verify`` over the production
+    derivation) — an override that a derivation outranks could never override anything.
+    Otherwise it is DERIVED from ``SALES_AGENT_DOMAIN``, through the same
+    ``get_sales_agent_url`` every other published origin comes from, so the issuer stays
+    the origin a client can actually reach.
 
-
-def validate_mcp_access_token(
-    token: str,
-    *,
-    issuer: str,
-    audience: str,
-    now: datetime | None = None,
-    signing_key: str | None = None,
-) -> MCPAccessTokenClaims:
-    """Validate a first-party MCP access token and return typed claims."""
-    try:
-        payload = jwt.decode(
-            token,
-            signing_key or _get_signing_key(),
-            algorithms=[_JWT_ALGORITHM],
-            audience=audience,
-            issuer=issuer,
-            leeway=_JWT_LEEWAY_SECONDS,
-            options={"require": _REQUIRED_ACCESS_TOKEN_CLAIMS},
-        )
-    except jwt.PyJWTError as exc:
-        raise OAuthTokenValidationError("Invalid OAuth access token") from exc
-
-    _validate_oauth_claims(payload)
-
-    return MCPAccessTokenClaims(
-        tenant_id=str(payload["tenant_id"]),
-        principal_id=str(payload["principal_id"]),
-        client_id=str(payload["client_id"]),
-        scopes=str(payload.get("scope", "")).split(),
-        subject=str(payload["sub"]),
-        issuer=str(payload["iss"]),
-        audience=str(payload["aud"]),
-        expires_at=datetime.fromtimestamp(int(payload["exp"]), UTC),
-        issued_at=datetime.fromtimestamp(int(payload["iat"]), UTC),
-        jwt_id=str(payload["jti"]),
-    )
-
-
-def get_mcp_oauth_issuer() -> str:
-    """Return the issuer URL for first-party MCP OAuth tokens."""
-    if issuer := os.environ.get("MCP_OAUTH_ISSUER"):
+    ``None`` exists for the ONE caller that needs the answer without needing it to exist:
+    ``AuthChallengeResponder`` attaches the RFC 9728 ``resource_metadata`` pointer to a
+    ``WWW-Authenticate`` header, and a deployment that cannot name itself has no document
+    to point at. Omitting that parameter leaves an RFC 7235-legal ``Bearer`` challenge, so
+    the 401 still says "authenticate"; refusing there would answer a credential refusal
+    with a configuration error instead, which says nothing about the credential and hides
+    what actually happened. Every caller that PUBLISHES or BINDS the issuer wants
+    :func:`get_mcp_oauth_issuer`.
+    """
+    if issuer := get_settings().runtime.mcp_oauth_issuer:
         return issuer.rstrip("/")
     if url := get_sales_agent_url(_get_public_protocol()):
         return url.rstrip("/")
-    return "http://localhost:8000"
+    return None
+
+
+def get_mcp_oauth_issuer() -> str:
+    """The issuer URL for first-party MCP OAuth tokens, or a refusal.
+
+    The form for a caller about to CLAIM the issuer: publish it in discovery metadata, or
+    bind a minted token to the resource derived from it. Resolution is
+    :func:`get_mcp_oauth_issuer_or_none`; this adds only what happens when there is none.
+
+    Raises:
+        AdCPConfigurationError: The deployment names neither source. There is deliberately
+            no ``http://localhost:8000`` fallback: a deployment that cannot name itself must
+            not claim to be an OAuth issuer, because the issuer is published in discovery
+            metadata and compared by every client that holds a token — so a guess is not a
+            degraded answer, it is a wrong one. CONFIGURATION_ERROR is this repo's one code
+            for a seller-side deployment fault only an operator can repoint, which is the
+            same refusal ``_addressed_tenant`` answers a request that names no tenant with.
+    """
+    if issuer := get_mcp_oauth_issuer_or_none():
+        return issuer
+    raise AdCPConfigurationError(
+        details=ConfigurationDetails(
+            capability="mcp_oauth",
+            # The knob names live HERE: CODE_TABLE's sentence names none, so an operator
+            # reading only the rendered message would have nothing to set (the shape
+            # src/core/signing/keys.py uses for its missing-KEK refusal).
+            tracked_by=(
+                "This deployment cannot name itself, so it must not claim to be an OAuth issuer: "
+                "set SALES_AGENT_DOMAIN (the issuer is derived from it, as every other published "
+                "origin is) or MCP_OAUTH_ISSUER to state the issuer outright."
+            ),
+        ),
+    )
 
 
 def get_mcp_oauth_audience() -> str:
-    """Return the canonical MCP resource audience for OAuth access tokens."""
-    if audience := os.environ.get("MCP_OAUTH_AUDIENCE"):
+    """The canonical MCP resource audience for OAuth access tokens, or a refusal.
+
+    The RFC 8707 resource identifier an access token is bound to, stored on the token's row
+    and compared at lookup. Same precedence as the issuer, with one extra step: a
+    deployment that states only the issuer gets ``<issuer>/mcp``, because that is where this
+    app mounts MCP. A deployment that states neither reaches
+    :func:`get_mcp_oauth_issuer`'s refusal — ONE refusal site for one missing fact.
+    """
+    if audience := get_settings().runtime.mcp_oauth_audience:
         return audience.rstrip("/")
     if url := get_mcp_server_url(_get_public_protocol()):
         return url.rstrip("/")
     return f"{get_mcp_oauth_issuer()}/mcp"
-
-
-def _validate_oauth_claims(payload: dict[str, Any]) -> None:
-    if not all(str(payload.get(claim) or "") for claim in ("tenant_id", "principal_id", "client_id", "jti")):
-        raise OAuthTokenValidationError("OAuth access token is missing required principal claims")
-
-
-def _get_signing_key() -> str:
-    signing_key = os.environ.get("MCP_OAUTH_JWT_SECRET")
-    if signing_key:
-        return signing_key
-    raise RuntimeError("MCP_OAUTH_JWT_SECRET must be set before issuing or validating MCP OAuth tokens")
 
 
 def _get_public_protocol() -> str:

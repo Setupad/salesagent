@@ -5,23 +5,25 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from mcp.shared.auth import OAuthMetadata, ProtectedResourceMetadata
 
+from src.core.credentials import hash_token
 from src.core.database.database_session import execute_with_retry
+from src.core.database.repositories.oauth_access_token import OAuthAccessTokenRepository
 from src.core.database.repositories.oauth_client import OAuthClientRepository
 from src.core.oauth_service import (
     DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS,
     DEFAULT_AUTHORIZATION_CODE_LIFETIME_SECONDS,
     DEFAULT_MCP_OAUTH_SCOPE,
+    generate_access_token,
     generate_authorization_code,
     get_mcp_oauth_audience,
     get_mcp_oauth_issuer,
     hash_authorization_code,
-    issue_mcp_access_token,
     verify_client_secret,
     verify_pkce_s256,
 )
@@ -185,15 +187,12 @@ def _oauth_client_credentials_token(request: Request, form) -> JSONResponse:
     if requested_scopes is None:
         return _oauth_error("invalid_scope", "Requested scope is not allowed", 400)
 
-    now = datetime.now(UTC)
-    access_token = issue_mcp_access_token(
+    access_token = _mint_access_token(
         tenant_id=oauth_client.tenant_id,
         principal_id=oauth_client.principal_id,
         client_id=oauth_client.client_id,
-        issuer=get_mcp_oauth_issuer(),
-        audience=get_mcp_oauth_audience(),
         scopes=requested_scopes,
-        now=now,
+        resource=resource,
     )
 
     return _oauth_token_response(access_token, requested_scopes)
@@ -223,14 +222,12 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
 
     if not _mark_authorization_code_used(hash_authorization_code(str(form.get("code") or ""))):
         return _oauth_error("invalid_grant", "Authorization code is expired or already used", 400)
-    access_token = issue_mcp_access_token(
+    access_token = _mint_access_token(
         tenant_id=authorization_code.tenant_id,
         principal_id=authorization_code.principal_id,
         client_id=authorization_code.client_id,
-        issuer=get_mcp_oauth_issuer(),
-        audience=get_mcp_oauth_audience(),
         scopes=authorization_code.scopes,
-        now=datetime.now(UTC),
+        resource=authorization_code.resource,
     )
 
     return _oauth_token_response(access_token, authorization_code.scopes)
@@ -287,6 +284,47 @@ def _oauth_token_response(access_token: str, scopes: list[str]) -> JSONResponse:
         },
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+
+
+def _mint_access_token(
+    *,
+    tenant_id: str,
+    principal_id: str,
+    client_id: str,
+    scopes: list[str],
+    resource: str,
+) -> str:
+    """Record an access token for this grant and return the plaintext, once.
+
+    ONE mint for both grants. The two differ only in where the facts come from — the
+    authenticated client for ``client_credentials``, the stored authorization code for
+    ``authorization_code`` — and a second copy of the hash-and-store step is how one grant
+    comes to store a different set of facts than the other.
+
+    The plaintext is returned and nothing else: what is persisted is
+    ``hash_token(access_token)``, so the string in the response exists in this process and
+    in the client, and in no log and no column. Every other argument becomes a column the
+    verifier reads instead of trusting a claim — including ``resource``, which is where the
+    JWT's ``aud`` went: the RFC 8707 binding is now a stored fact compared at lookup,
+    exactly as ``OAuthAuthorizationCode.resource`` already works.
+    """
+    access_token = generate_access_token()
+    expires_at = datetime.now(UTC) + timedelta(seconds=DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS)
+
+    def _mint(session):
+        OAuthAccessTokenRepository(session, tenant_id).mint(
+            token_hash=hash_token(access_token),
+            client_id=client_id,
+            principal_id=principal_id,
+            scopes=scopes,
+            resource=resource,
+            expires_at=expires_at,
+        )
+
+    # ``execute_with_retry`` opens the session and commits it, the same way the
+    # authorization code reached the database two calls earlier in this request.
+    execute_with_retry(_mint)
+    return access_token
 
 
 def _load_oauth_client(client_id: str) -> _OAuthClientAuthResult | None:
@@ -406,10 +444,24 @@ def _oauth_error(error: str, description: str, status_code: int) -> JSONResponse
 
 
 def _append_query_params(url: str, params: dict[str, str]) -> str:
-    parsed = urlsplit(url)
-    query = parse_qsl(parsed.query, keep_blank_values=True)
-    query.extend(params.items())
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+    """Append *params* to *url*'s query, leaving every other byte of *url* untouched.
+
+    APPENDED, never reassembled. The previous spelling decomposed the registered redirect
+    URI with ``urlsplit`` and rebuilt it with ``urlunsplit``, which is the destination
+    rewrite ``tests/unit/test_architecture_no_destination_rewrite.py`` refuses outright:
+    "the URL a caller supplies must reach the egress seam byte-for-byte... There is no
+    allowlist." A rebuild also normalizes — percent-encoding, an empty authority, a
+    ``;``-bearing path — so what the client receives need not be what it registered.
+
+    Appending is TOTAL here rather than merely usually right, because
+    ``validate_oauth_redirect_uri`` already refused every shape that would break it before
+    the URI was ever stored: absolute, HTTPS (or loopback HTTP), and FRAGMENT-FREE per RFC
+    6749 §3.1.2. With no fragment there is nothing after the query for the appended
+    parameters to land behind, so reading ``.query`` to pick the separator is the whole
+    decision. Reading a component is fine; the guard objects to reassembly.
+    """
+    sep = "&" if urlsplit(url).query else "?"
+    return f"{url}{sep}{urlencode(params)}"
 
 
 def _as_utc(value: datetime) -> datetime:
