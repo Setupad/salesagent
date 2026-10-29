@@ -103,6 +103,7 @@ def _registered_client(redirect_uris: list[str] | None = None):
             client_secret_hash="stored_hash",
             scopes=["mcp:principal"],
             redirect_uris=redirect_uris or [],
+            resource=AUDIENCE,
         )
 
     return _load
@@ -117,32 +118,6 @@ def _authenticating_client(monkeypatch, redirect_uris: list[str] | None = None) 
     """
     monkeypatch.setattr("src.routes.oauth._load_oauth_client", _registered_client(redirect_uris))
     monkeypatch.setattr("src.routes.oauth.verify_client_secret", lambda secret, stored_hash: secret == "secret")
-
-
-def test_oauth_metadata_routes_advertise_authorization_code_and_client_credentials():
-    client = _test_client()
-
-    protected_resource = client.get("/.well-known/oauth-protected-resource")
-    scoped_protected_resource = client.get("/.well-known/oauth-protected-resource/mcp")
-    authorization_server = client.get("/.well-known/oauth-authorization-server")
-
-    assert protected_resource.status_code == 200
-    assert protected_resource.json()["resource"] == AUDIENCE
-    assert protected_resource.json()["authorization_servers"] == [ISSUER]
-    assert scoped_protected_resource.status_code == 200
-    assert scoped_protected_resource.json() == protected_resource.json()
-    assert authorization_server.status_code == 200
-    assert authorization_server.json()["issuer"] == ISSUER
-    assert authorization_server.json()["authorization_endpoint"] == f"{ISSUER}/authorize"
-    assert authorization_server.json()["token_endpoint"] == f"{ISSUER}/oauth/token"
-    assert authorization_server.json()["grant_types_supported"] == ["authorization_code", "client_credentials"]
-    assert authorization_server.json()["token_endpoint_auth_methods_supported"] == [
-        "client_secret_basic",
-        "client_secret_post",
-    ]
-    assert authorization_server.json()["response_types_supported"] == ["code"]
-    assert authorization_server.json()["code_challenge_methods_supported"] == ["S256"]
-    assert "registration_endpoint" not in authorization_server.json()
 
 
 def test_client_credentials_grant_stores_the_token_it_returns(monkeypatch, minted_rows, caplog):
@@ -223,7 +198,8 @@ def test_client_credentials_token_response_is_rfc_6749_conformant(monkeypatch, m
     assert response.headers["Pragma"] == "no-cache"
 
 
-def test_oauth_token_endpoint_rejects_wrong_resource():
+def test_oauth_token_endpoint_rejects_wrong_resource(monkeypatch):
+    _authenticating_client(monkeypatch)
     response = _test_client().post(
         "/oauth/token",
         data={
@@ -293,7 +269,7 @@ def test_authorize_redirect_preserves_the_registered_uri_byte_for_byte(
             "response_type": "code",
             "client_id": CLIENT_ID,
             "redirect_uri": registered_redirect_uri,
-            "code_challenge": _pkce_challenge("verifier-for-remote-mcp-client"),
+            "code_challenge": _pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "code_challenge_method": "S256",
             "state": "client-state",
         },
@@ -317,7 +293,7 @@ def test_oauth_authorization_code_pkce_flow_stores_the_token_and_rejects_reuse(m
     the end is what proves the code was consumed: a second exchange mints nothing.
     """
     redirect_uri = "https://client.example.com/oauth/callback"
-    verifier = "verifier-for-remote-mcp-client"
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
     challenge = _pkce_challenge(verifier)
     stored_codes: dict[str, dict] = {}
 

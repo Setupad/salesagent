@@ -18,8 +18,9 @@ import base64
 import hashlib
 
 import pytest
+from pydantic import ValidationError
 
-from src.core.config import load_settings
+from src.core.config import RuntimeSettings, load_settings
 from src.core.exceptions import AdCPConfigurationError
 from src.core.oauth_service import (
     generate_access_token,
@@ -208,11 +209,37 @@ def test_authorization_code_hash_is_stable_and_not_plaintext():
 
 
 def test_verify_pkce_s256_accepts_matching_verifier_and_rejects_wrong_value():
-    verifier = "verifier-for-remote-mcp-client"
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
 
     assert verify_pkce_s256(verifier, challenge) is True
     assert verify_pkce_s256("wrong-verifier", challenge) is False
+
+
+@pytest.mark.parametrize("verifier", ["", "x", "a" * 129, "!" * 43, "\u00e9" * 43])
+def test_pkce_rejects_verifiers_outside_rfc7636_syntax(verifier):
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest()).decode().rstrip("=")
+
+    assert verify_pkce_s256(verifier, challenge) is False
+
+
+@pytest.mark.parametrize("challenge", ["short", "!" * 43, "\u00e9" * 43, "a" * 129])
+def test_pkce_rejects_malformed_challenges_without_raising(challenge):
+    assert verify_pkce_s256("a" * 43, challenge) is False
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("mcp_oauth_issuer", "https://agent.example.com/prefix"),
+        ("mcp_oauth_issuer", "https://agent.example.com?query=1"),
+        ("mcp_oauth_audience", "https://agent.example.com/prefix/mcp"),
+        ("mcp_oauth_audience", "https://agent.example.com/mcp#fragment"),
+    ],
+)
+def test_oauth_settings_reject_unsupported_prefixes_and_url_components(field, value):
+    with pytest.raises(ValidationError):
+        RuntimeSettings(**{field: value})
 
 
 @pytest.mark.parametrize(

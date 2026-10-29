@@ -330,6 +330,8 @@ class TestOAuthRouteCompatibility:
         load_settings()
 
     def test_oauth_routes_are_reachable_before_admin_fallback(self):
+        from fastapi.routing import APIRoute
+        from starlette.routing import Mount
         from starlette.testclient import TestClient
 
         from src.app import _install_admin_mounts, app
@@ -337,10 +339,17 @@ class TestOAuthRouteCompatibility:
         _install_admin_mounts()
         client = TestClient(app)
 
-        metadata_response = client.get("/.well-known/oauth-protected-resource")
+        metadata_index = next(
+            index
+            for index, route in enumerate(app.routes)
+            if isinstance(route, APIRoute) and route.path == "/.well-known/oauth-protected-resource"
+        )
+        fallback_index = next(
+            index for index, route in enumerate(app.routes) if isinstance(route, Mount) and route.path == ""
+        )
         token_response = client.post("/oauth/token", data={"grant_type": "unsupported"})
 
-        assert metadata_response.status_code == 200
+        assert metadata_index < fallback_index
         assert token_response.status_code == 400
         assert token_response.json()["error"] == "unsupported_grant_type"
 

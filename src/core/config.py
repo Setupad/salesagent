@@ -34,6 +34,7 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypedDict
+from urllib.parse import urlsplit
 
 from adcp.signing.agent_resolver import BrandAgentType
 from pydantic import Field, ValidationInfo, field_validator, model_validator
@@ -84,6 +85,28 @@ class RuntimeSettings(BaseSettings):
             "is, from sales_agent_domain, and falls back to '<issuer>/mcp'"
         ),
     )
+
+    @field_validator("mcp_oauth_issuer", "mcp_oauth_audience")
+    @classmethod
+    def validate_oauth_url(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        path = "/mcp" if info.field_name == "mcp_oauth_audience" else ""
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path.rstrip("/") != path
+        ):
+            raise ValueError(
+                f"{info.field_name} must be an HTTP(S) origin{path}; prefixes, queries and fragments are unsupported"
+            )
+        return value
+
     adcp_multi_tenant: bool = False
     adcp_log_dir: Path = Path("logs")
     adcp_run_background_schedulers: bool = True

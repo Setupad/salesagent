@@ -3,27 +3,32 @@
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import unquote_plus, urlencode
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from mcp.shared.auth import OAuthMetadata, ProtectedResourceMetadata
+from starlette.datastructures import FormData, QueryParams
 
 from src.core.credentials import hash_token
 from src.core.database.database_session import execute_with_retry
 from src.core.database.repositories.oauth_access_token import OAuthAccessTokenRepository
 from src.core.database.repositories.oauth_client import OAuthClientRepository
+from src.core.database.repositories.tenant import TenantRepository
+from src.core.database.repositories.tenant_lookup import TenantLookupRepository
 from src.core.oauth_service import (
     DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS,
     DEFAULT_AUTHORIZATION_CODE_LIFETIME_SECONDS,
     DEFAULT_MCP_OAUTH_SCOPE,
     generate_access_token,
     generate_authorization_code,
-    get_mcp_oauth_audience,
     get_mcp_oauth_issuer,
     hash_authorization_code,
+    mcp_resource_for_host,
+    valid_pkce_challenge,
     verify_client_secret,
     verify_pkce_s256,
 )
@@ -39,6 +44,7 @@ class _OAuthClientAuthResult:
     client_secret_hash: str
     scopes: list[str]
     redirect_uris: list[str]
+    resource: str
 
 
 @dataclass(frozen=True)
@@ -65,16 +71,27 @@ class _OAuthAuthorizationCodeResult:
     response_model=ProtectedResourceMetadata,
     response_model_exclude_none=True,
 )
-async def oauth_protected_resource_metadata() -> JSONResponse:
+async def oauth_protected_resource_metadata(request: Request) -> JSONResponse:
     issuer = get_mcp_oauth_issuer()
+    resource = _resource_for_request(request)
+    if resource is None:
+        return _oauth_error("invalid_target", "No active tenant is registered for this host", 400)
     payload = {
-        "resource": get_mcp_oauth_audience(),
+        "resource": resource,
         "authorization_servers": [issuer],
         "bearer_methods_supported": ["header"],
         "scopes_supported": [DEFAULT_MCP_OAUTH_SCOPE],
     }
     ProtectedResourceMetadata.model_validate(payload)
     return JSONResponse(payload)
+
+
+def _resource_for_request(request: Request) -> str | None:
+    def _lookup(session):
+        tenant = TenantLookupRepository(session).find_active_by_virtual_host(request.headers.get("host", ""))
+        return mcp_resource_for_host(tenant.virtual_host) if tenant else None
+
+    return execute_with_retry(_lookup)
 
 
 @router.get(
@@ -115,14 +132,12 @@ async def oauth_authorize(request: Request) -> JSONResponse | RedirectResponse:
     (`account.require_operator_auth` and `account.authorization_endpoint`).
     """
     params = request.query_params
-    if str(params.get("response_type") or "") != "code":
-        return _oauth_error("unsupported_response_type", "Only response_type=code is supported", 400)
-
+    if any(len(params.getlist(name)) > 1 for name in ("client_id", "redirect_uri")):
+        return _oauth_error("invalid_request", "Client and redirect URI must be unambiguous", 400)
     client_id = str(params.get("client_id") or "")
     redirect_uri = str(params.get("redirect_uri") or "")
     code_challenge = str(params.get("code_challenge") or "")
     code_challenge_method = str(params.get("code_challenge_method") or "")
-    resource = str(params.get("resource") or get_mcp_oauth_audience()).rstrip("/")
     state = params.get("state")
 
     oauth_client = _load_oauth_client(client_id)
@@ -130,14 +145,20 @@ async def oauth_authorize(request: Request) -> JSONResponse | RedirectResponse:
         return _oauth_error("invalid_request", "Unknown OAuth client", 400)
     if redirect_uri not in oauth_client.redirect_uris:
         return _oauth_error("invalid_request", "Redirect URI is not registered for this OAuth client", 400)
-    if not code_challenge or code_challenge_method != "S256":
-        return _oauth_error("invalid_request", "S256 PKCE code_challenge is required", 400)
-    if resource != get_mcp_oauth_audience():
-        return _oauth_error("invalid_target", "The requested resource is not this MCP server", 400)
+    resource = str(params.get("resource") or oauth_client.resource).rstrip("/")
+    if _has_duplicate_parameters(params):
+        return _authorization_response(redirect_uri, state, error="invalid_request")
+    if str(params.get("response_type") or "") != "code":
+        error = "unsupported_response_type" if params.get("response_type") else "invalid_request"
+        return _authorization_response(redirect_uri, state, error=error)
+    if not valid_pkce_challenge(code_challenge) or code_challenge_method != "S256":
+        return _authorization_response(redirect_uri, state, error="invalid_request")
+    if resource != oauth_client.resource:
+        return _authorization_response(redirect_uri, state, error="invalid_target")
 
     requested_scopes = _parse_requested_scopes(str(params.get("scope") or ""), oauth_client.scopes)
     if requested_scopes is None:
-        return _oauth_error("invalid_scope", "Requested scope is not allowed", 400)
+        return _authorization_response(redirect_uri, state, error="invalid_scope")
 
     authorization_code = generate_authorization_code()
     now = datetime.now(UTC)
@@ -155,15 +176,26 @@ async def oauth_authorize(request: Request) -> JSONResponse | RedirectResponse:
         created_at=now,
     )
 
-    redirect_params = {"code": authorization_code}
+    return _authorization_response(redirect_uri, state, code=authorization_code)
+
+
+def _authorization_response(redirect_uri: str, state: str | None, **params: str) -> RedirectResponse:
     if state is not None:
-        redirect_params["state"] = str(state)
-    return RedirectResponse(_append_query_params(redirect_uri, redirect_params), status_code=302)
+        params["state"] = state
+    return RedirectResponse(_append_query_params(redirect_uri, params), status_code=302)
+
+
+def _has_duplicate_parameters(params: FormData | QueryParams) -> bool:
+    return any(len(params.getlist(name)) > 1 for name in params)
 
 
 @router.post("/oauth/token")
 async def oauth_token(request: Request) -> JSONResponse:
     form = await request.form()
+    if _has_duplicate_parameters(form) or (
+        request.headers.get("authorization") and (form.get("client_secret") or form.get("client_assertion"))
+    ):
+        return _oauth_error("invalid_request", "Duplicate parameters or multiple client authentication methods", 400)
     grant_type = str(form.get("grant_type") or "")
     if grant_type == "client_credentials":
         return _oauth_client_credentials_token(request, form)
@@ -173,11 +205,6 @@ async def oauth_token(request: Request) -> JSONResponse:
 
 
 def _oauth_client_credentials_token(request: Request, form) -> JSONResponse:
-
-    resource = str(form.get("resource") or get_mcp_oauth_audience()).rstrip("/")
-    if resource != get_mcp_oauth_audience():
-        return _oauth_error("invalid_target", "The requested resource is not this MCP server", 400)
-
     authenticated_client = _authenticate_confidential_client(request, form)
     if isinstance(authenticated_client, JSONResponse):
         return authenticated_client
@@ -192,17 +219,13 @@ def _oauth_client_credentials_token(request: Request, form) -> JSONResponse:
         principal_id=oauth_client.principal_id,
         client_id=oauth_client.client_id,
         scopes=requested_scopes,
-        resource=resource,
+        resource=oauth_client.resource,
     )
 
     return _oauth_token_response(access_token, requested_scopes)
 
 
 def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
-    resource = str(form.get("resource") or get_mcp_oauth_audience()).rstrip("/")
-    if resource != get_mcp_oauth_audience():
-        return _oauth_error("invalid_target", "The requested resource is not this MCP server", 400)
-
     authenticated_client = _authenticate_confidential_client(request, form)
     if isinstance(authenticated_client, JSONResponse):
         return authenticated_client
@@ -213,7 +236,7 @@ def _oauth_authorization_code_token(request: Request, form) -> JSONResponse:
         authorization_code,
         oauth_client=oauth_client,
         redirect_uri=str(form.get("redirect_uri") or ""),
-        resource=resource,
+        resource=oauth_client.resource,
         code_verifier=str(form.get("code_verifier") or ""),
     )
     if isinstance(grant_result, JSONResponse):
@@ -271,6 +294,9 @@ def _authenticate_confidential_client(request: Request, form) -> _OAuthClientAut
     oauth_client = _load_oauth_client(client_id)
     if not oauth_client or not verify_client_secret(client_secret, oauth_client.client_secret_hash):
         return _oauth_error("invalid_client", "Client authentication failed", 401)
+    resource = str(form.get("resource") or oauth_client.resource).rstrip("/")
+    if resource != oauth_client.resource:
+        return _oauth_error("invalid_target", "The requested resource is not this client's MCP server", 400)
     return oauth_client
 
 
@@ -332,6 +358,9 @@ def _load_oauth_client(client_id: str) -> _OAuthClientAuthResult | None:
         oauth_client = OAuthClientRepository(session).find_active_by_client_id_across_tenants(client_id)
         if not oauth_client:
             return None
+        tenant = TenantRepository(session).get_active(oauth_client.tenant_id)
+        if tenant is None:
+            return None
         return _OAuthClientAuthResult(
             tenant_id=oauth_client.tenant_id,
             principal_id=oauth_client.principal_id,
@@ -339,6 +368,7 @@ def _load_oauth_client(client_id: str) -> _OAuthClientAuthResult | None:
             client_secret_hash=oauth_client.client_secret_hash,
             scopes=list(oauth_client.scopes or []),
             redirect_uris=list(oauth_client.redirect_uris or []),
+            resource=mcp_resource_for_host(tenant.virtual_host),
         )
 
     return execute_with_retry(_lookup)
@@ -411,9 +441,9 @@ def _extract_client_auth(request: Request, form) -> tuple[str | None, str | None
     authorization = request.headers.get("authorization") or ""
     if authorization.lower().startswith("basic "):
         try:
-            decoded = base64.b64decode(authorization[6:].strip()).decode("utf-8")
+            decoded = base64.b64decode(authorization[6:].strip(), validate=True).decode("utf-8")
             client_id, client_secret = decoded.split(":", 1)
-            return client_id, client_secret
+            return unquote_plus(client_id), unquote_plus(client_secret)
         except (ValueError, UnicodeDecodeError):
             return None, None
 
@@ -424,10 +454,12 @@ def _extract_client_auth(request: Request, form) -> tuple[str | None, str | None
 
 def _parse_requested_scopes(scope_text: str, allowed_scopes: list[str]) -> list[str] | None:
     if not scope_text:
-        return allowed_scopes or [DEFAULT_MCP_OAUTH_SCOPE]
-    requested = scope_text.split()
+        return list(allowed_scopes) if DEFAULT_MCP_OAUTH_SCOPE in allowed_scopes else None
+    if re.fullmatch(r"[\x21\x23-\x5b\x5d-\x7e]+(?: [\x21\x23-\x5b\x5d-\x7e]+)*", scope_text) is None:
+        return None
+    requested = scope_text.split(" ")
     allowed = set(allowed_scopes)
-    if not set(requested).issubset(allowed):
+    if not set(requested).issubset(allowed) or DEFAULT_MCP_OAUTH_SCOPE not in requested:
         return None
     return requested
 
@@ -460,7 +492,7 @@ def _append_query_params(url: str, params: dict[str, str]) -> str:
     parameters to land behind, so reading ``.query`` to pick the separator is the whole
     decision. Reading a component is fine; the guard objects to reassembly.
     """
-    sep = "&" if urlsplit(url).query else "?"
+    sep = "" if url.endswith(("?", "&")) else "&" if "?" in url else "?"
     return f"{url}{sep}{urlencode(params)}"
 
 

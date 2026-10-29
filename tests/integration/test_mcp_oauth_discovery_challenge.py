@@ -70,7 +70,7 @@ ISSUER = "https://agent.example.com"
 #: The RFC 9728 protected-resource metadata document ``src/routes/oauth.py`` serves. The
 #: challenge has to name THIS, because it is the only document that names the authorization
 #: server, and a client that was never configured with an issuer has nowhere else to look.
-METADATA_URL = f"{ISSUER}/.well-known/oauth-protected-resource"
+METADATA_URL = "https://discovery.adcp.test/.well-known/oauth-protected-resource"
 
 #: No credential presented: the scheme alone plus the pointer. RFC 6750 §3 reserves the
 #: ``error`` parameter for a credential that WAS presented and rejected, so AUTH_MISSING

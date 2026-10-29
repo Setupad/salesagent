@@ -174,7 +174,7 @@ def _mint_access_token(
 
 @pytest.fixture
 def seller(monkeypatch: pytest.MonkeyPatch) -> _Seller:
-    tenant = TenantFactory.build(tenant_id=_TENANT_ID, is_active=True)
+    tenant = TenantFactory.build(tenant_id=_TENANT_ID, virtual_host="seller.example.com", is_active=True)
     principal = PrincipalFactory.build(
         tenant=tenant,
         principal_id=_PRINCIPAL_ID,

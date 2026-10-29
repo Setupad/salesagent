@@ -124,10 +124,8 @@ def get_admin_url(protocol: str = "https") -> str | None:
 def get_mcp_server_url(protocol: str = "https") -> str | None:
     """Get this deployment's MCP endpoint (e.g., https://sales-agent.example.com/mcp).
 
-    This is the MCP *resource identifier* the OAuth layer advertises: the audience
-    of an issued access token and the ``resource_metadata`` the
-    ``WWW-Authenticate`` challenge points a client at. It is built from this
-    deployment's own domain, so it stays the origin a client can actually reach.
+    This is the deployment-wide endpoint, used for configuration defaults.
+    Tenant OAuth resources use each tenant's registered virtual_host instead.
 
     Returns:
         The full URL, or None if SALES_AGENT_DOMAIN is not configured.

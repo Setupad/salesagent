@@ -1,6 +1,6 @@
 """The one renderer of a refused credential as HTTP: ``AuthChallengeResponder``.
 
-It reads nothing off the request and resolves nothing. Each transport hands its request
+It reads the request host for discovery links and resolves no identity. Each transport hands its request
 headers to the boundary, whose resolver is the one reader of a credential; this module
 lifts the AdCP auth code out of a FINISHED JSON body onto the status line and attaches the
 ``WWW-Authenticate`` challenge beside it.
@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Final
 
+from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from src.core.errors.codes import CODE_BY_VALUE, CODE_TABLE, CodeGroup
@@ -62,7 +64,7 @@ _BEARER_ERROR_BY_CODE: Final[dict[str, str | None]] = {
 }
 
 
-def _bearer_challenge(code: str) -> str | None:
+def _bearer_challenge(code: str, host: str | None = None) -> str | None:
     """The ``Bearer`` challenge for *code*, with the OAuth discovery pointer on it.
 
     ``resource_metadata`` is the parameter RFC 9728 §5.1 defines and MCP's authorization
@@ -102,17 +104,20 @@ def _bearer_challenge(code: str) -> str | None:
     """
     if code not in _BEARER_ERROR_BY_CODE:
         return None
-    from src.core.oauth_service import get_mcp_oauth_issuer_or_none
+    from src.core.oauth_service import get_mcp_oauth_issuer_or_none, mcp_resource_for_host
 
     params = []
     if (bearer_error := _BEARER_ERROR_BY_CODE[code]) is not None:
         params.append(f'error="{bearer_error}"')
     if issuer := get_mcp_oauth_issuer_or_none():
-        params.append(f'resource_metadata="{issuer}/.well-known/oauth-protected-resource"')
+        if host is not None and re.fullmatch(r"[A-Za-z0-9.:[\]-]+", host) is None:
+            host = None
+        origin = mcp_resource_for_host(host).removesuffix("/mcp") if host else issuer
+        params.append(f'resource_metadata="{origin}/.well-known/oauth-protected-resource"')
     return f"Bearer {', '.join(params)}".rstrip()
 
 
-def _challenge_for_code(code: str | None) -> str | None:
+def _challenge_for_code(code: str | None, host: str | None = None) -> str | None:
     """The ``WWW-Authenticate`` value for *code*, or None if it is not an auth refusal.
 
     PRIVATE, and that is the point. ``_flush`` is the only caller: asking this question has
@@ -134,7 +139,7 @@ def _challenge_for_code(code: str | None) -> str | None:
         # ``code`` is the wire string off a finished body; the membership test against the
         # generated vocabulary is what keeps an arbitrary body from minting a challenge.
         return challenge_for(code or "")
-    return _bearer_challenge(code or "")
+    return _bearer_challenge(code or "", host)
 
 
 def _envelope_in_body(body: dict) -> dict | None:
@@ -289,16 +294,16 @@ class AuthChallengeResponder:
             chunks.append(message.get("body", b"") or b"")
             if message.get("more_body", False):
                 return
-            await _flush(send, start, b"".join(chunks))
+            await _flush(send, start, b"".join(chunks), host=Headers(raw=scope.get("headers", [])).get("host"))
 
         await self.app(scope, receive, buffer)
 
 
-async def _flush(send: Send, start: Message | None, body: bytes) -> None:
+async def _flush(send: Send, start: Message | None, body: bytes, *, host: str | None = None) -> None:
     """Emit the held response, upgrading it to 401 when it carries an auth refusal.
 
-    The inbound ``WWW-Authenticate`` is stripped UNCONDITIONALLY, then re-derived from the
-    body. Not a tidy-up: it is what makes a second renderer pointless rather than merely
+    An AdCP response's ``WWW-Authenticate`` is stripped, then re-derived from the
+    body. OAuth token responses retain their own Basic challenge. This makes a second AdCP renderer pointless rather than merely
     discouraged. Anything further in that writes its own challenge has it overwritten here,
     so the only way to change what a buyer receives is to change this function -- which is
     the property an architecture guard would otherwise have to police by inspection.
@@ -319,9 +324,9 @@ async def _flush(send: Send, start: Message | None, body: bytes) -> None:
         code = adcp_error_code_in(json.loads(body)) if body else None
     except (ValueError, TypeError):
         code = None
-    challenge = _challenge_for_code(code)
+    challenge = _challenge_for_code(code, host)
     start = dict(start)
-    headers = [h for h in start.get("headers", []) if h[0].lower() != b"www-authenticate"]
+    headers = [h for h in start.get("headers", []) if code is None or h[0].lower() != b"www-authenticate"]
     if challenge:
         start["status"] = 401
         headers.append((b"www-authenticate", challenge.encode("latin-1")))

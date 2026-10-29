@@ -17,6 +17,7 @@ from src.core.database.repositories.oauth_access_token import OAuthAccessTokenRe
 from src.core.database.repositories.oauth_client import OAuthClientRepository
 from src.core.database.repositories.principal import PrincipalRepository
 from src.core.database.repositories.tenant import TenantRepository
+from src.core.oauth_service import DEFAULT_MCP_OAUTH_SCOPE, mcp_resource_for_host
 from src.core.schemas import Principal
 
 logger = logging.getLogger(__name__)
@@ -83,11 +84,9 @@ def _oauth_principal(session, token_hash: str, tenant_id: str) -> Principal | No
        tenant scoping is constructor-bound, so a token minted for one seller is not visible
        to another seller's query and there is no spelling of this lookup that reaches
        across (the invariant ``tests/unit/test_cross_tenant_query_isolation.py`` grades).
-       ``aud`` became the stored ``resource`` column, settled when the row was minted: the
-       authorization and token endpoints both refuse any ``resource`` but this deployment's
-       own MCP audience before writing it (``src/routes/oauth.py``), so the binding is
-       established at mint time and re-reading it here would only compare the deployment's
-       configuration against itself. And the signature verification is gone entirely,
+    ``aud`` became the stored ``resource`` column. The grant binds it to the client's
+    tenant host; this lookup compares it with that tenant's registered MCP resource.
+    The required ``mcp:principal`` scope must also be present. Signature verification is absent,
        because the authorization server and this resource server are the same process on
        the same session factory: there is no verifier that cannot read the authoritative
        rows. Consequently this path reads no environment and holds no secret.
@@ -118,7 +117,12 @@ def _oauth_principal(session, token_hash: str, tenant_id: str) -> Principal | No
         )
         return None
 
-    if TenantRepository(session).get_active(tenant_id) is None:
+    tenant = TenantRepository(session).get_active(tenant_id)
+    if tenant is None:
+        return None
+    if access_token.resource != mcp_resource_for_host(tenant.virtual_host):
+        return None
+    if DEFAULT_MCP_OAUTH_SCOPE not in access_token.scopes:
         return None
 
     row = PrincipalRepository(session, tenant_id).get(access_token.principal_id)

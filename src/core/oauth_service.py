@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -99,9 +100,19 @@ def hash_authorization_code(code: str) -> str:
 
 def verify_pkce_s256(code_verifier: str, code_challenge: str) -> bool:
     """Verify an OAuth S256 PKCE code verifier against the stored challenge."""
+    if re.fullmatch(r"[A-Za-z0-9._~-]{43,128}", code_verifier) is None or not valid_pkce_challenge(code_challenge):
+        return False
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     actual = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return hmac.compare_digest(actual, code_challenge)
+
+
+def valid_pkce_challenge(code_challenge: str) -> bool:
+    return re.fullmatch(r"[A-Za-z0-9_-]{43}", code_challenge) is not None
+
+
+def mcp_resource_for_host(virtual_host: str) -> str:
+    return f"{get_protocol_for_domain(virtual_host)}://{virtual_host.lower()}/mcp"
 
 
 def validate_oauth_redirect_uri(redirect_uri: str) -> str | None:
