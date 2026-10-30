@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Format picker selection checks</title>
+</head>
+<body>
+    <h1>Format picker selection checks</h1>
+    <pre id="results"></pre>
+    <div id="fixtures"></div>
+    <script src="../../static/js/format-template-picker.js"></script>
+    <script>
+        window.pickerChecks = [];
+        let fixtureIndex = 0;
+        const agentUrl = 'https://creative.adcontextprotocol.org';
+        const displayFormats = (width, height) => ['display_image', 'display_html', 'display_js'].map(id => ({
+            agent_url: agentUrl, id, width, height
+        }));
+
+        function createPicker(initialFormats, autoSelectInventory = false) {
+            fixtureIndex += 1;
+            const container = document.createElement('div');
+            container.id = `picker-${fixtureIndex}`;
+            const input = document.createElement('input');
+            input.id = `formats-${fixtureIndex}`;
+            input.type = 'hidden';
+            document.getElementById('fixtures').append(container, input);
+            return new FormatTemplatePicker({
+                containerId: container.id,
+                hiddenInputId: input.id,
+                tenantId: 'selection-check',
+                adapterType: 'gam',
+                initialFormats,
+                autoSelectInventory
+            });
+        }
+
+        function assertFormats(picker, expected) {
+            const actual = JSON.stringify(JSON.parse(picker.hiddenInput.value));
+            if (actual !== JSON.stringify(expected)) {
+                throw new Error(`Expected ${JSON.stringify(expected)}, received ${actual}`);
+            }
+        }
+
+        function check(name, run) {
+            try {
+                run();
+                window.pickerChecks.push({ name, passed: true });
+            } catch (error) {
+                window.pickerChecks.push({ name, passed: false, error: error.message });
+            }
+        }
+
+        check('saved sizes stay selected without adding other inventory sizes', () => {
+            const saved = displayFormats(300, 250);
+            const picker = createPicker(saved);
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            assertFormats(picker, saved);
+            if (!picker.inventorySizes.has('728x90')) throw new Error('Inventory suggestion missing');
+        });
+
+        check('removing a size survives inventory refresh and reopening', () => {
+            const picker = createPicker([...displayFormats(300, 250), ...displayFormats(728, 90)]);
+            picker.toggleSize('display', 728, 90);
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            const saved = displayFormats(300, 250);
+            assertFormats(picker, saved);
+            const reopened = createPicker(JSON.parse(picker.hiddenInput.value));
+            reopened.addSizesFromInventory(['300x250', '728x90']);
+            assertFormats(reopened, saved);
+            if (reopened.container.querySelector('.inventory-size-chip[data-size="728x90"]')) {
+                throw new Error('Removed size appears as a selected inventory chip');
+            }
+        });
+
+        check('removing Display keeps a video-only product video-only', () => {
+            const video = ['video_standard', 'video_vast'].map(id => ({ agent_url: agentUrl, id }));
+            const picker = createPicker([...displayFormats(300, 250), ...video]);
+            picker.toggleTemplate('display');
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            assertFormats(picker, video);
+            const reopened = createPicker(JSON.parse(picker.hiddenInput.value));
+            reopened.addSizesFromInventory(['300x250']);
+            assertFormats(reopened, video);
+        });
+
+        check('new products still auto-select inventory sizes', () => {
+            const picker = createPicker([], true);
+            picker.addSizesFromInventory(['300x250']);
+            assertFormats(picker, displayFormats(300, 250));
+        });
+
+        check('an empty edit selection stays empty when inventory arrives', () => {
+            const picker = createPicker([]);
+            picker.addSizesFromInventory(['300x250']);
+            assertFormats(picker, []);
+        });
+
+        check('manual format choices survive a late inventory response', () => {
+            const picker = createPicker(displayFormats(300, 250));
+            picker.toggleTemplate('display');
+            picker.toggleTemplate('native_standard');
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            assertFormats(picker, [{ agent_url: agentUrl, id: 'native_standard' }]);
+        });
+
+        check('removing the last display size does not broaden the selection', () => {
+            const picker = createPicker(displayFormats(300, 250));
+            picker.toggleSize('display', 300, 250);
+            assertFormats(picker, []);
+        });
+
+        check('restored form JSON preserves its selected formats', () => {
+            const saved = displayFormats(300, 250);
+            const picker = createPicker(JSON.stringify(saved));
+            picker.addSizesFromInventory(['728x90']);
+            assertFormats(picker, saved);
+        });
+
+        check('manual removals override auto-selection on new products', () => {
+            const picker = createPicker([], true);
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            picker.toggleSize('display', 728, 90);
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            assertFormats(picker, displayFormats(300, 250));
+        });
+
+        check('removing an inventory chip survives refreshed inventory', () => {
+            const picker = createPicker([], true);
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            picker.container.querySelector('.remove-inventory-size[data-size="728x90"]').click();
+            picker.addSizesFromInventory(['300x250', '728x90']);
+            assertFormats(picker, displayFormats(300, 250));
+        });
+
+        check('clearing inventory sizes removes Display without removing video', () => {
+            const video = ['video_standard', 'video_vast'].map(id => ({ agent_url: agentUrl, id }));
+            const picker = createPicker([...displayFormats(300, 250), ...video]);
+            picker.addSizesFromInventory(['300x250']);
+            picker.container.querySelector('.clear-inventory-sizes-btn').click();
+            picker.addSizesFromInventory(['300x250']);
+            assertFormats(picker, video);
+        });
+
+        document.getElementById('results').textContent = JSON.stringify(window.pickerChecks, null, 2);
+    </script>
+</body>
+</html>

@@ -121,6 +121,7 @@ class FormatTemplatePicker {
         this.adapterType = options.adapterType || 'mock';
         this.scriptRoot = options.scriptRoot || '';
         this.onSelectionChange = options.onSelectionChange || (() => {});
+        this.autoSelectInventory = options.autoSelectInventory ?? !options.initialFormats?.length;
 
         // State
         this.selectedTemplates = new Map();  // templateId -> Set of {width, height} or {duration_ms}
@@ -140,7 +141,8 @@ class FormatTemplatePicker {
 
         // Load initial formats if provided (edit mode)
         if (options.initialFormats && options.initialFormats.length > 0) {
-            this._parseInitialFormats(options.initialFormats);
+            this._parseInitialFormats(typeof options.initialFormats === 'string'
+                ? JSON.parse(options.initialFormats) : options.initialFormats);
             // Update hidden input with initial formats so form submission works
             this._updateHiddenInput();
         }
@@ -241,12 +243,12 @@ class FormatTemplatePicker {
             if (typeof sizeStr === 'string' && sizeStr.includes('x')) {
                 this.inventorySizes.add(sizeStr);
 
-                // Auto-select the unified "display" template and add these sizes
-                // This template expands to display_image, display_html, display_js
-                if (!this.selectedTemplates.has('display')) {
-                    this.selectedTemplates.set('display', new Set());
+                if (this.autoSelectInventory) {
+                    if (!this.selectedTemplates.has('display')) {
+                        this.selectedTemplates.set('display', new Set());
+                    }
+                    this.selectedTemplates.get('display').add(sizeStr);
                 }
-                this.selectedTemplates.get('display').add(sizeStr);
             }
         });
 
@@ -258,10 +260,11 @@ class FormatTemplatePicker {
      * Clear inventory-derived sizes.
      */
     clearInventorySizes() {
+        this.autoSelectInventory = false;
         // Remove inventory sizes from selections
         for (const sizeStr of this.inventorySizes) {
             for (const [templateId, sizes] of this.selectedTemplates) {
-                sizes.delete(sizeStr);
+                this._removeSelectedSize(templateId, sizeStr);
             }
         }
         this.inventorySizes.clear();
@@ -274,13 +277,14 @@ class FormatTemplatePicker {
      */
     removeInventorySize(sizeStr) {
         if (!this.inventorySizes.has(sizeStr)) return;
+        this.autoSelectInventory = false;
 
         // Remove from inventory sizes set
         this.inventorySizes.delete(sizeStr);
 
         // Remove from all template selections
         for (const [templateId, sizes] of this.selectedTemplates) {
-            sizes.delete(sizeStr);
+            this._removeSelectedSize(templateId, sizeStr);
         }
 
         this.render();
@@ -291,6 +295,7 @@ class FormatTemplatePicker {
      * Toggle a template selection.
      */
     toggleTemplate(templateId) {
+        this.autoSelectInventory = false;
         if (this.selectedTemplates.has(templateId)) {
             this.selectedTemplates.delete(templateId);
         } else {
@@ -304,6 +309,7 @@ class FormatTemplatePicker {
      * Toggle a size for a template.
      */
     toggleSize(templateId, width, height) {
+        this.autoSelectInventory = false;
         const sizeKey = `${width}x${height}`;
 
         if (!this.selectedTemplates.has(templateId)) {
@@ -312,13 +318,20 @@ class FormatTemplatePicker {
 
         const sizes = this.selectedTemplates.get(templateId);
         if (sizes.has(sizeKey)) {
-            sizes.delete(sizeKey);
+            this._removeSelectedSize(templateId, sizeKey);
         } else {
             sizes.add(sizeKey);
         }
 
         this.render();
         this._updateHiddenInput();
+    }
+
+    _removeSelectedSize(templateId, sizeKey) {
+        const sizes = this.selectedTemplates.get(templateId);
+        if (sizes.delete(sizeKey) && sizes.size === 0) {
+            this.selectedTemplates.delete(templateId);
+        }
     }
 
     /**
@@ -686,22 +699,21 @@ class FormatTemplatePicker {
     }
 
     _renderInventorySizesSection() {
-        const sizes = [...this.inventorySizes];
+        const sizes = [...this.inventorySizes].filter(size =>
+            [...this.selectedTemplates.values()].some(selected => selected.has(size)));
+        if (sizes.length === 0) return '';
 
         return `
             <div style="margin-bottom: 1.5rem; padding: 1rem; background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 8px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
                     <h5 style="margin: 0; color: #2e7d32;">
-                        &#x1F4E6; Sizes from Inventory
+                        &#x1F4E6; Selected Inventory Sizes
                     </h5>
                     <button type="button" class="clear-inventory-sizes-btn"
                             style="padding: 0.25rem 0.5rem; background: #d32f2f; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem;">
                         Clear All
                     </button>
                 </div>
-                <p style="color: #666; font-size: 0.85rem; margin-bottom: 0.5rem;">
-                    These sizes were automatically added based on your selected inventory. Click × to remove.
-                </p>
                 <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
                     ${sizes.map(s => {
                         const escaped = escapeHtml(s);

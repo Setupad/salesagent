@@ -370,7 +370,7 @@ Target users based on local weather conditions for maximum relevance.</div>
         </div><!-- end creative-formats-section -->
 
         <!-- Load Format Template Picker JS -->
-        <script src="{{ request.script_root }}/static/js/format-template-picker.js"></script>
+        <script src="{{ request.script_root }}/static/js/format-template-picker.js?v=20261030-selection"></script>
 
         <!-- Section 4: Pricing Options (AdCP PR #88) -->
         <h3 style="margin-top: 2rem; border-bottom: 2px solid #007bff; padding-bottom: 0.5rem;">Pricing Options</h3>
@@ -1406,7 +1406,12 @@ function prepareFormSubmission(event) {
 
     try {
         const parsed = JSON.parse(existingValue);
-        hasFormatPickerData = Array.isArray(parsed) && parsed.length > 0;
+        hasFormatPickerData = Array.isArray(parsed) && (window.formatPicker || parsed.length > 0);
+        if (window.formatPicker && Array.isArray(parsed) && parsed.length === 0) {
+            event.preventDefault();
+            alert('Select at least one creative format before saving.');
+            return false;
+        }
     } catch (e) {
         hasFormatPickerData = false;
     }
@@ -1820,6 +1825,7 @@ addPricingOption();
         adapterType: 'gam',  // GAM adapter - hides audio formats
         scriptRoot: '{{ request.script_root }}' || '',
         initialFormats: existingFormats,
+        autoSelectInventory: {{ 'false' if product or form_data else 'true' }},
         onSelectionChange: function(formats) {
             console.log('Formats updated:', formats.length, 'formats selected');
         }
