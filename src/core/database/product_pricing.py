@@ -6,8 +6,6 @@ Handles transition from legacy pricing fields to pricing_options table.
 import logging
 from typing import Any
 
-from sqlalchemy import inspect
-
 from src.core.database.models import Product as ProductModel
 
 logger = logging.getLogger(__name__)
@@ -33,16 +31,7 @@ def get_product_pricing_options(product: ProductModel) -> list[dict[str, Any]]:
     """
     pricing_options_list = []
 
-    # Check if pricing_options relationship is loaded and has data
-    # Use inspect to safely check without triggering lazy load if not needed
-    state = inspect(product)
-    pricing_options_loaded = "pricing_options" not in state.unloaded
-
-    # Load from pricing_options relationship
-    logger.info(
-        f"Product {product.name} ({product.product_id}): pricing_options_loaded={pricing_options_loaded}, has pricing_options={bool(product.pricing_options)}, count={len(product.pricing_options) if pricing_options_loaded else 'N/A'}"
-    )
-    if pricing_options_loaded and product.pricing_options:
+    if product.pricing_options:
         for po in product.pricing_options:
             pricing_options_list.append(
                 {
