@@ -1,12 +1,26 @@
 from decimal import Decimal
 
+import pytest
+
 from src.core.database.models import PricingOption
 from src.core.product_conversion import convert_product_model_to_schema
 from tests.helpers.adcp_factories import create_test_db_product
 
 
-def test_conversion_exposes_selectable_key_value_pairs_in_ext():
-    selectable = {"sport": {"display_name": "Sport", "values": ["basketball", "football"]}}
+@pytest.mark.parametrize(
+    "selectable",
+    [
+        {"sport": {"display_name": "Sport", "values": ["basketball", "football"]}},
+        {
+            "cxense": {
+                "display_name": "Cxense Audience Segments",
+                "values": ["8pw6evgjviun"],
+                "value_labels": {"8pw6evgjviun": "Car buyers"},
+            }
+        },
+    ],
+)
+def test_conversion_exposes_selectable_key_value_pairs_in_ext(selectable):
     product = create_test_db_product(
         tenant_id="selectable_targeting_test",
         targeting_template={"selectable_key_value_pairs": selectable},

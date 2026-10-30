@@ -76,9 +76,20 @@ function selectableOption(key, values) {
         .filter(value => value.status === 'ACTIVE' && typeof value.name === 'string' && value.name.length)
         .map(value => value.name))];
     if (!names.length) throw new Error('This key has no active values to expose.');
-    return { display_name: key.display_name || key.name, values: names };
+    const option = { display_name: key.display_name || key.name, values: names };
+    const labels = targetingValueLabels(names, values);
+    if (Object.keys(labels).length) option.value_labels = labels;
+    return option;
+}
+
+function targetingValueLabels(names, values) {
+    const allowed = new Set(names);
+    return Object.fromEntries(values
+        .filter(value => allowed.has(value.name) && typeof value.display_name === 'string'
+            && value.display_name.trim() && value.display_name !== value.name)
+        .map(value => [value.name, value.display_name]));
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { TargetingCatalog, selectableOption };
+    module.exports = { TargetingCatalog, selectableOption, targetingValueLabels };
 }

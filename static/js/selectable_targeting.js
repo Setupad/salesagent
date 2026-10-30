@@ -61,9 +61,47 @@ class SelectableTargetingEditor {
             this.keys = (await this.catalog.keys(refresh)).filter(key => key.status === 'ACTIVE');
             this.updateKeys();
             this.status(this.keys.length ? '' : 'No active GAM keys. Sync inventory to populate the catalog.');
+            await this.loadSavedValueLabels();
         } catch (error) {
             this.status(error.message, true);
         }
+    }
+
+    async loadSavedValueLabels() {
+        await Promise.all(Object.keys(this.options).map(async name => {
+            const key = this.keys.find(item => item.name === name);
+            if (!key) return;
+            try {
+                const catalogValues = await this.catalog.values(key.id);
+                if (!Object.hasOwn(this.options, name)) return;
+                const saved = this.options[name];
+                const values = Array.isArray(saved) ? saved : saved?.values;
+                if (!Array.isArray(values)) return;
+                const labels = targetingValueLabels(values, catalogValues);
+                if (!Object.keys(labels).length) return;
+                this.options[name] = {
+                    ...(Array.isArray(saved) ? { values } : saved),
+                    value_labels: { ...saved.value_labels, ...labels }
+                };
+                this.save();
+                for (const row of this.container.querySelectorAll('.selectable-targeting-row')) {
+                    if (row.dataset.key === name) {
+                        row.querySelector('.selectable-targeting-values').textContent = this.valueText(this.options[name]);
+                    }
+                }
+            } catch (error) {
+                this.status(`Value names for ${name} could not be loaded. Saved values are preserved. ${error.message}`, true);
+            }
+        }));
+    }
+
+    valueText(saved) {
+        const values = Array.isArray(saved) ? saved : saved.values;
+        return values.map(value => {
+            if (typeof value !== 'string') return JSON.stringify(value);
+            const label = saved.value_labels?.[value];
+            return typeof label === 'string' && label !== value ? `${label} (${value})` : value;
+        }).join(', ');
     }
 
     updateKeys() {
@@ -167,14 +205,15 @@ class SelectableTargetingEditor {
         input.value = saved.display_name || name;
         input.disabled = this.busy;
         input.addEventListener('input', () => {
-            this.options[name] = { ...(Array.isArray(saved) ? { values } : saved), display_name: input.value };
+            const current = this.options[name];
+            this.options[name] = { ...(Array.isArray(current) ? { values } : current), display_name: input.value };
             this.save();
         });
         label.append(input);
         const details = this.element('details');
         details.append(this.element('summary', `${values.length} allowed values`));
         const list = this.element('div', '', 'selectable-targeting-values');
-        list.textContent = values.map(value => typeof value === 'string' ? value : JSON.stringify(value)).join(', ');
+        list.textContent = this.valueText(saved);
         details.append(list);
         row.append(label, details);
         this.container.append(row);

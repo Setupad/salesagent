@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { TargetingCatalog, selectableOption } = require('../../static/js/targeting_catalog.js');
+const { TargetingCatalog, selectableOption, targetingValueLabels } = require('../../static/js/targeting_catalog.js');
 
 test('loads every values page and shares requests across widgets', async () => {
     const calls = [];
@@ -43,9 +43,28 @@ test('exposes all distinct active value names, not GAM IDs or labels', () => {
         { id: '2', name: 'web', status: 'ACTIVE' },
         { id: '3', name: 'retired', status: 'INACTIVE' },
         { id: '4', name: 'amp', status: 'ACTIVE' }
-    ]), { display_name: 'Environment', values: ['amp', 'web'] });
+    ]), { display_name: 'Environment', values: ['amp', 'web'], value_labels: { amp: 'AMP' } });
+});
+
+test('preserves readable audience labels separately from opaque targeting IDs', () => {
+    assert.deepEqual(selectableOption({ name: 'cxense', display_name: 'Cxense Audience Segments' }, [
+        { id: '123', name: '8pw6evgjviun', display_name: 'Car buyers', status: 'ACTIVE' },
+        { id: '124', name: '18hq8xicqx12i', display_name: '18hq8xicqx12i', status: 'ACTIVE' },
+        { id: '125', name: 'retired', display_name: 'Retired segment', status: 'INACTIVE' }
+    ]), {
+        display_name: 'Cxense Audience Segments',
+        values: ['8pw6evgjviun', '18hq8xicqx12i'],
+        value_labels: { '8pw6evgjviun': 'Car buyers' }
+    });
 });
 
 test('refuses keys with no active values', () => {
     assert.throws(() => selectableOption({ name: 'sport' }, []), /active values/i);
+});
+
+test('enriches only saved IDs without exposing other catalog values', () => {
+    assert.deepEqual(targetingValueLabels(['opaque-id'], [
+        { name: 'opaque-id', display_name: 'Car buyers' },
+        { name: 'not-allowed', display_name: 'Another audience' }
+    ]), { 'opaque-id': 'Car buyers' });
 });

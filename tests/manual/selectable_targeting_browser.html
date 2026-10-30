@@ -34,7 +34,7 @@
                 { id: '13', name: 'sport', status: 'ACTIVE' }
             ] }
             : parsed.searchParams.get('offset') === '0'
-                ? { values: [{ name: 'amp', status: 'ACTIVE' }], has_more: true, next_offset: 250 }
+                ? { values: [{ name: 'amp', display_name: 'AMP readers', status: 'ACTIVE' }], has_more: true, next_offset: 250 }
                 : { values: [{ name: 'web', status: 'ACTIVE' }], has_more: false, next_offset: null };
         return { ok: !parsed.pathname.endsWith('/13'), status: 503, json: async () => body };
     };
@@ -44,8 +44,11 @@
         const editor = new SelectableTargetingEditor(container, field);
         await editor.loadKeys();
         await editor.expose(editor.keys.find(key => key.name === 'hb_env'));
-        const expected = { hb_env: { display_name: 'Environment', values: ['amp', 'web'] } };
+        const expected = { hb_env: { display_name: 'Environment', values: ['amp', 'web'], value_labels: { amp: 'AMP readers' } } };
         if (field.value !== JSON.stringify(expected)) throw new Error('All pages must become a name-based allowlist.');
+        if (!container.querySelector('.selectable-targeting-values').textContent.includes('AMP readers (amp)')) {
+            throw new Error('Readable value names must appear alongside targeting IDs.');
+        }
         if (container.querySelector('option[value="12"]')) throw new Error('A key cannot be added twice.');
         const label = container.querySelector('.selectable-targeting-label input');
         label.value = 'Ad environment';
@@ -58,15 +61,26 @@
         await restored.loadKeys();
         if (container.querySelectorAll('.selectable-targeting-row').length !== 1) throw new Error('Restore failed.');
         if (container.querySelector('.selectable-targeting-label input').value !== 'Ad environment') throw new Error('Label lost.');
-        restored.busy = true;
+        field.value = JSON.stringify({ hb_env: { display_name: 'Ad environment', values: ['amp'] } });
+        const legacy = new SelectableTargetingEditor(container, field);
+        await legacy.loadKeys();
+        const enriched = JSON.parse(field.value).hb_env;
+        if (JSON.stringify(enriched.values) !== '["amp"]' || enriched.value_labels.amp !== 'AMP readers') {
+            throw new Error('Legacy enrichment must preserve the saved allowlist.');
+        }
+        const enrichedLabel = container.querySelector('.selectable-targeting-label input');
+        enrichedLabel.value = 'Updated label';
+        enrichedLabel.dispatchEvent(new Event('input'));
+        if (JSON.parse(field.value).hb_env.value_labels.amp !== 'AMP readers') throw new Error('Label edit lost value names.');
+        legacy.busy = true;
         const submission = new Event('submit', { cancelable: true });
         field.form.dispatchEvent(submission);
         if (!submission.defaultPrevented) throw new Error('Pending values must block form submission.');
-        restored.busy = false;
-        restored.render();
+        legacy.busy = false;
+        legacy.render();
         container.querySelector('[aria-label="Remove hb_env"]').click();
         if (field.value !== '{}') throw new Error('Remove must update submitted data.');
-        await restored.expose(restored.keys.find(key => key.name === 'hb_env'));
+        await legacy.expose(legacy.keys.find(key => key.name === 'hb_env'));
         container.querySelector('details').open = true;
         document.getElementById('result').textContent = 'PASS: all pages, duplicate prevention, label edit, error preservation, restore, pending submit, removal.';
         document.documentElement.dataset.result = 'passed';
