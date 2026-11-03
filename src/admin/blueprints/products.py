@@ -341,8 +341,8 @@ def parse_pricing_options_from_form(form_data: dict) -> list[PricingOption]:
             continue
 
         # Parse pricing model and is_fixed from combined value
-        # Guaranteed (fixed): cpm_fixed, flat_rate
-        # Non-guaranteed (auction): cpm_auction, vcpm, cpc
+        # Guaranteed (fixed): cpm_fixed, vcpm, flat_rate
+        # Non-guaranteed (auction): cpm_auction, cpc
         if pricing_model_raw == "cpm_fixed":
             pricing_model = "cpm"
             is_fixed = True
@@ -354,7 +354,7 @@ def parse_pricing_options_from_form(form_data: dict) -> list[PricingOption]:
             is_fixed = True
         elif pricing_model_raw == "vcpm":
             pricing_model = "vcpm"
-            is_fixed = False  # vCPM is always auction-based
+            is_fixed = True
         elif pricing_model_raw == "cpc":
             pricing_model = "cpc"
             is_fixed = False  # CPC is always auction-based

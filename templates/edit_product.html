@@ -343,7 +343,7 @@ function addPricingOption(existingData = null) {
                         <option value="">Select...</option>
                         <option value="cpm_fixed" ${existingData && existingData.pricing_model === 'cpm' && existingData.is_fixed ? 'selected' : ''}>CPM - Fixed Rate</option>
                         <option value="cpm_auction" ${existingData && existingData.pricing_model === 'cpm' && !existingData.is_fixed ? 'selected' : ''}>CPM - Auction</option>
-                        <option value="vcpm" ${existingData && existingData.pricing_model === 'vcpm' ? 'selected' : ''}>VCPM - Standard (Viewable impressions)</option>
+                        <option value="vcpm" ${existingData && existingData.pricing_model === 'vcpm' ? 'selected' : ''}>VCPM - Fixed Rate (Viewable impressions)</option>
                         <option value="cpcv" ${existingData && existingData.pricing_model === 'cpcv' ? 'selected' : ''}>CPCV (Cost per completed view)</option>
                         <option value="cpp" ${existingData && existingData.pricing_model === 'cpp' ? 'selected' : ''}>CPP (Cost per point/GRP)</option>
                         <option value="cpc" ${existingData && existingData.pricing_model === 'cpc' ? 'selected' : ''}>CPC (Cost per click)</option>
@@ -411,8 +411,7 @@ function addPricingOption(existingData = null) {
         const priceGuidance = document.getElementById(`price-guidance-${index}`);
 
         // Determine if fixed or auction from pricing model selection
-        // Models using floor-price entry in this form: cpm_auction, vcpm, cpc
-        const isFixed = !['cpm_auction', 'vcpm', 'cpc'].includes(pricingModel);
+        const isFixed = !['cpm_auction', 'cpc'].includes(pricingModel);
 
         if (isFixed) {
             rateGroup.style.display = 'block';
@@ -422,7 +421,6 @@ function addPricingOption(existingData = null) {
             const floorInput = document.querySelector(`input[name="floor_${index}"]`);
             if (floorInput) floorInput.required = false;
         } else {
-            // Floor-price mode (cpm_auction, vcpm, cpc)
             rateGroup.style.display = 'none';
             floorGroup.style.display = 'block';
             priceGuidance.style.display = 'block';

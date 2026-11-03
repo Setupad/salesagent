@@ -1315,9 +1315,7 @@ function addPricingOption(existingData = null) {
                         <optgroup label="Guaranteed (Fixed Price)">
                             <option value="cpm_fixed" ${existingData && existingData.pricing_model?.toLowerCase() === 'cpm' && existingData.is_fixed === true ? 'selected' : ''}>CPM - Fixed Rate (Cost per 1,000 impressions)</option>
                             <option value="flat_rate" ${existingData && existingData.pricing_model?.toLowerCase() === 'flat_rate' ? 'selected' : ''}>Flat Rate - Fixed Campaign Cost (Sponsorship)</option>
-                        </optgroup>
-                        <optgroup label="Standard Line Item">
-                            <option value="vcpm" ${existingData && existingData.pricing_model?.toLowerCase() === 'vcpm' ? 'selected' : ''}>VCPM - Standard (Viewable impressions)</option>
+                            <option value="vcpm" ${existingData && existingData.pricing_model?.toLowerCase() === 'vcpm' ? 'selected' : ''}>VCPM - Fixed Rate (Viewable impressions)</option>
                         </optgroup>
                         <optgroup label="Non-Guaranteed (Auction/Bidding)">
                             <option value="cpm_auction" ${existingData && existingData.pricing_model?.toLowerCase() === 'cpm' && existingData.is_fixed === false ? 'selected' : ''}>CPM - Auction (Floor price bidding)</option>
@@ -1367,9 +1365,8 @@ function addPricingOption(existingData = null) {
         const rateGroup = document.getElementById(`rate-group-${index}`);
         const floorGroup = document.getElementById(`floor-group-${index}`);
 
-        // vCPM and CPC use floor pricing in this form.
         const value = modelSelect.value;
-        const isAuction = value.includes('auction') || value === 'vcpm' || value === 'cpc';
+        const isAuction = value.includes('auction') || value === 'cpc';
 
         if (isAuction) {
             rateGroup.style.display = 'none';
