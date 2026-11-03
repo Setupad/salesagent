@@ -49,10 +49,15 @@ def _forecast_package(
     config = read_adapter_config(identity.tenant_id)
     if config is None or config.adapter_type != "google_ad_manager" or not config.gam_network_code:
         raise ValueError("Exact package forecasting is not supported by this adapter.")
+    from src.adapters.gam.client import GAMClientManager
     from src.adapters.gam.managers.targeting import GAMTargetingManager
 
+    client = GAMClientManager(AdapterConfigRepository.get_gam_config(config), config.gam_network_code)
     targeting_manager = GAMTargetingManager(
-        identity.tenant_id, targeting_config=AdapterConfigRepository.get_gam_targeting_config(config)
+        identity.tenant_id,
+        gam_client=client.get_client() if package.targeting_overlay and package.targeting_overlay.custom else None,
+        targeting_config=AdapterConfigRepository.get_gam_targeting_config(config),
+        allow_value_creation=False,
     )
     with ProductUoW(identity.tenant_id) as uow:
         assert uow.products is not None
@@ -62,9 +67,6 @@ def _forecast_package(
         line_item = build_package_forecast_line_item(
             stored_product, package, pricing, targeting_manager=targeting_manager
         )
-    from src.adapters.gam.client import GAMClientManager
-
-    client = GAMClientManager(AdapterConfigRepository.get_gam_config(config), config.gam_network_code)
     result = client.get_service("ForecastService").getAvailabilityForecast(
         {"lineItem": line_item}, {"includeTargetingCriteriaBreakdown": False, "includeContendingLineItems": False}
     )

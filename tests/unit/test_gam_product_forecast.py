@@ -86,6 +86,92 @@ def test_package_forecast_applies_country_targeting() -> None:
     ]
 
 
+def test_package_forecast_uses_buyer_selectable_custom_targeting() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from src.adapters.gam.managers.targeting import GAMTargetingManager
+
+    class SelectableProduct(FakeProduct):
+        targeting_template = {"selectable_key_value_pairs": {"CxSegments": {"values": ["female"]}}}
+
+    client = Mock()
+    client.GetService.return_value.getCustomTargetingValuesByStatement.return_value = SimpleNamespace(
+        results=[SimpleNamespace(id=5678)]
+    )
+    manager = GAMTargetingManager(
+        "test",
+        gam_client=client,
+        targeting_config={"custom_targeting_keys": {"CxSegments": "1234"}},
+        allow_value_creation=False,
+    )
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-10T00:00:00Z",
+        end_time="2026-12-10T23:59:59Z",
+        targeting_overlay=Targeting(custom={"gam": {"key_value_pairs": {"CxSegments": ["female"]}}}),
+    )
+    pricing = VcpmPricingOption(pricing_option_id="fixed", currency="EUR", fixed_price=10)
+    line_item = build_package_forecast_line_item(SelectableProduct(), package, pricing, targeting_manager=manager)
+    assert line_item["targeting"]["customTargeting"]["children"] == [
+        {"xsi_type": "CustomCriteria", "keyId": 1234, "operator": "IS", "valueIds": [5678]}
+    ]
+    client.GetService.return_value.createCustomTargetingValues.assert_not_called()
+    package.targeting_overlay = Targeting(
+        custom={"gam": {"key_value_pairs": {"CxSegments": ["female"]}, "key_values": {"CxSegments": ["undeclared"]}}}
+    )
+    with pytest.raises(ValueError, match="GAM key/value"):
+        build_package_forecast_line_item(SelectableProduct(), package, pricing, targeting_manager=manager)
+    package.targeting_overlay = Targeting(custom={"gam": {"key_value_pairs": {"CxSegments": ["undeclared"]}}})
+    with pytest.raises(ValueError, match="undeclared"):
+        build_package_forecast_line_item(SelectableProduct(), package, pricing, targeting_manager=manager)
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_package_forecast_custom_value_lookup_never_creates(found: bool) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from src.adapters.gam.managers.targeting import GAMTargetingManager
+    from src.core.exceptions import AdCPAdapterError
+
+    service = Mock()
+    service.getCustomTargetingValuesByStatement.return_value = SimpleNamespace(
+        results=[SimpleNamespace(id=5678)] if found else []
+    )
+    client = Mock()
+    client.GetService.return_value = service
+    manager = GAMTargetingManager(
+        "test", gam_client=client, targeting_config={"custom_targeting_keys": {}}, allow_value_creation=False
+    )
+    if found:
+        assert manager._get_or_create_custom_targeting_value("1234", "female") == 5678
+    else:
+        with pytest.raises(AdCPAdapterError):
+            manager._get_or_create_custom_targeting_value("1234", "female")
+    service.getCustomTargetingValuesByStatement.assert_called_once_with(
+        {"query": "WHERE customTargetingKeyId = 1234 AND name = 'female'"}
+    )
+    service.createCustomTargetingValues.assert_not_called()
+
+
+def test_package_forecast_loads_latvia_country_mapping() -> None:
+    from src.adapters.gam.managers.targeting import GAMTargetingManager
+
+    manager = GAMTargetingManager("test", targeting_config={"custom_targeting_keys": {}})
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-10T00:00:00Z",
+        end_time="2026-12-10T23:59:59Z",
+        targeting_overlay=Targeting(geo_countries=["LV"]),
+    )
+    pricing = VcpmPricingOption(pricing_option_id="fixed", currency="EUR", fixed_price=10)
+    line_item = build_package_forecast_line_item(FakeProduct(), package, pricing, targeting_manager=manager)
+    assert line_item["targeting"]["geoTargeting"] == {"targetedLocations": [{"id": "2428"}]}
+
+
 class FakeForecastService:
     def __init__(self) -> None:
         self.line_item = None

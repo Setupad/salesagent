@@ -6,6 +6,7 @@ from adcp.types import DeliveryForecast
 from src.adapters.gam.pricing_compatibility import PricingCompatibility
 from src.core.schemas.pricing import CpmPricingOption, VcpmPricingOption
 from src.core.schemas.product import PackageForecastInput
+from src.services.targeting_capabilities import validate_selectable_custom_targeting
 
 DEFAULT_FORECAST_DURATION_DAYS = 30
 DEFAULT_FORECAST_TTL_HOURS = 6
@@ -36,6 +37,9 @@ def build_package_forecast_line_item(
     )
     line_item["priority"] = PricingCompatibility.get_default_priority(line_item["lineItemType"])
     line_item["costType"] = PricingCompatibility.get_gam_cost_type(pricing.pricing_model)
+    violations = validate_selectable_custom_targeting(product, package.targeting_overlay)
+    if violations:
+        raise ValueError("; ".join(violations))
     line_item["targeting"].update(_package_overlay_targeting(package, targeting_manager))
     line_item["costPerUnit"]["microAmount"] = int(pricing.fixed_price * 1_000_000)
     goal = package.impressions if package.impressions is not None else package.budget * 1000 / pricing.fixed_price
@@ -56,8 +60,18 @@ def _package_overlay_targeting(package: PackageForecastInput, manager: Any) -> d
     if overlay is None:
         return {}
     supplied = {name for name in overlay.model_fields_set if getattr(overlay, name) is not None}
-    if supplied - {"geo_countries", "geo_countries_exclude"}:
-        raise ValueError("This provider supports country inclusion and exclusion only for exact package overlays.")
+    if supplied - {"geo_countries", "geo_countries_exclude", "custom"}:
+        raise ValueError("Exact package overlays support countries and buyer-selectable GAM key/value targeting.")
+    if overlay.custom:
+        gam = overlay.custom.get("gam")
+        if (
+            set(overlay.custom) != {"gam"}
+            or not isinstance(gam, dict)
+            or len(gam) != 1
+            or set(gam) - {"key_values", "key_value_pairs"}
+            or not all(isinstance(pairs, dict) for pairs in gam.values())
+        ):
+            raise ValueError("Exact package custom overlays require GAM key/value targeting.")
     if not supplied:
         return {}
     if manager is None:
