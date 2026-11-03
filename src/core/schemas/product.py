@@ -4,9 +4,12 @@ Extracted from src/core/schemas/__init__.py to reduce file size.
 All classes are re-exported from src.core.schemas for backward compatibility.
 """
 
-from typing import Any, ClassVar
+from datetime import datetime
+from typing import Annotated, Any, ClassVar, Literal
 
 from adcp.types import BrandReference as LibraryBrandReference
+from adcp.types import DeliveryForecast as LibraryDeliveryForecast
+from adcp.types import ForecastPoint as LibraryForecastPoint
 from adcp.types import GetProductsResponse as LibraryGetProductsResponse
 from adcp.types import GetProductsWholesaleRequest as LibraryGetProductsRequest
 from adcp.types import Placement as LibraryPlacement
@@ -14,7 +17,15 @@ from adcp.types import Product as LibraryProduct
 from adcp.types import ProductCard as LibraryProductCard
 from adcp.types import ProductCardDetailed as LibraryProductCardDetailed
 from adcp.types import ProductFilters as LibraryFilters
-from pydantic import ConfigDict, Field, model_validator
+from adcp.types import RefinementApplied as LibraryRefinementApplied
+from adcp.types import RefinementApplied1 as LibraryRequestRefinementApplied
+from adcp.types import RefinementApplied2 as LibraryProductRefinementApplied
+from adcp.types import RefinementApplied3 as LibraryProposalRefinementApplied
+from adcp.types.generated_poc.media_buy.get_products_request import Refine as LibraryRefine
+from adcp.types.generated_poc.media_buy.get_products_request import Refine1 as LibraryRequestRefinement
+from adcp.types.generated_poc.media_buy.get_products_request import Refine2 as LibraryProductRefinement
+from adcp.types.generated_poc.media_buy.get_products_request import Refine3 as LibraryProposalRefinement
+from pydantic import AwareDatetime, ConfigDict, Field, SerializeAsAny, ValidateAs, model_validator
 
 from src.core.config import get_pydantic_extra_mode
 from src.core.schemas._base import (
@@ -22,7 +33,9 @@ from src.core.schemas._base import (
     BuyerRequest,
     FormatId,
     NestedModelSerializerMixin,
+    PackageRequest,
     SalesAgentBaseModel,
+    Targeting,
 )
 
 # Private alias: product.py is star-imported by the package __init__, and a bare
@@ -69,6 +82,17 @@ class Placement(LibraryPlacement):
     )
 
 
+class PackageForecastPoint(LibraryForecastPoint):
+    availability_status: Literal["available", "unavailable"]
+
+
+class PackageDeliveryForecast(NestedModelSerializerMixin, LibraryDeliveryForecast):
+    points: Annotated[
+        list[Annotated[LibraryForecastPoint, ValidateAs(PackageForecastPoint, lambda value: value)]],
+        LibraryDeliveryForecast.model_fields["points"],
+    ]
+
+
 class Product(LibraryProduct):
     """Product schema extending library Product with internal fields.
 
@@ -98,6 +122,8 @@ class Product(LibraryProduct):
         description="Available pricing models for this product",
         min_length=1,
     )
+
+    forecast: Annotated[SerializeAsAny[LibraryDeliveryForecast] | None, LibraryProduct.model_fields["forecast"]] = None
 
     # Internal-only fields (not in AdCP spec)
     implementation_config: dict[str, Any] | None = Field(
@@ -183,6 +209,47 @@ class ProductFilters(LibraryFilters):
     """
 
 
+class PackageForecastInput(SalesAgentBaseModel):
+    pricing_option_id: Annotated[str, PackageRequest.model_fields["pricing_option_id"]]
+    budget: Annotated[float, PackageRequest.model_fields["budget"]]
+    impressions: Annotated[float | None, PackageRequest.model_fields["impressions"]]
+    start_time: Annotated[AwareDatetime | None, PackageRequest.model_fields["start_time"]]
+    end_time: Annotated[AwareDatetime | None, PackageRequest.model_fields["end_time"]]
+    targeting_overlay: Annotated[Targeting | None, PackageRequest.model_fields["targeting_overlay"]]
+
+
+class ProductRefinement(LibraryProductRefinement):
+    package: PackageForecastInput | None = Field(
+        default=None,
+        description="AdCP 3.1 extension based on 3.3: forecast this exact package without creating or reserving inventory.",
+    )
+
+    @model_validator(mode="after")
+    def validate_package_action(self) -> "ProductRefinement":
+        if self.package is not None and self.action not in (None, "include"):
+            raise ValueError("package is only valid for product include")
+        return self
+
+
+class Refinement(LibraryRefine):
+    root: Annotated[
+        LibraryRequestRefinement | ProductRefinement | LibraryProposalRefinement, Field(discriminator="scope")
+    ]
+
+
+class ProductRefinementApplied(LibraryProductRefinementApplied):
+    result_product_id: str | None = None
+    resolved_start_time: datetime | None = None
+    resolved_end_time: datetime | None = None
+
+
+class RefinementApplied(LibraryRefinementApplied):
+    root: Annotated[
+        LibraryRequestRefinementApplied | ProductRefinementApplied | LibraryProposalRefinementApplied,
+        Field(discriminator="scope"),
+    ]
+
+
 class GetProductsRequest(BuyerRequest, LibraryGetProductsRequest):
     """Extends library GetProductsWholesaleRequest (adcp 3.9: GetProductsRequest is a union alias).
 
@@ -222,11 +289,27 @@ class GetProductsRequest(BuyerRequest, LibraryGetProductsRequest):
 
     model_config = ConfigDict(extra=get_pydantic_extra_mode())
 
+    refine: Annotated[
+        list[Annotated[LibraryRefine, ValidateAs(Refinement, lambda value: value)]] | None,
+        LibraryGetProductsRequest.model_fields["refine"],
+    ]
+
     # Widen buying_mode from Literal['wholesale'] to str|None (we accept any mode or none)
     buying_mode: str | None = Field(  # type: ignore[assignment]
         None,
-        description="Buyer intent: 'brief' (publisher curates) or 'wholesale' (buyer applies own audiences)",
+        description="Buyer intent: 'brief', 'wholesale', or 'refine' (including read-only exact package forecasts).",
     )
+
+    @model_validator(mode="after")
+    def validate_refine_mode(self) -> "GetProductsRequest":
+        if self.refine is not None and self.buying_mode != "refine":
+            raise ValueError("refine requires buying_mode refine")
+        if self.buying_mode == "refine" and not self.refine:
+            raise ValueError("refine mode requires at least one entry")
+        product_ids = [entry.product_id for entry in self.refine or [] if entry.scope == "product"]
+        if len(product_ids) != len(set(product_ids)):
+            raise ValueError("Each product may occur only once in refine")
+        return self
 
 
 class GetProductsResponse(NestedModelSerializerMixin, LibraryGetProductsResponse, AdcpResponse):
@@ -241,6 +324,9 @@ class GetProductsResponse(NestedModelSerializerMixin, LibraryGetProductsResponse
     # required. The SDK base declares it optional (list | None); redeclare it
     # required so the model cannot construct an under-specified shape (#1399 Plan-B).
     products: list[LibraryProduct]
+    refinement_applied: (
+        list[Annotated[LibraryRefinementApplied, ValidateAs(RefinementApplied, lambda value: value)]] | None
+    ) = None
 
 
 class ProductCatalog(SalesAgentBaseModel):

@@ -182,7 +182,7 @@ async def _get_products_impl(req: GetProductsRequest, identity: PublicIdentity) 
     start_time = time.time()
 
     # Require at least one search criterion (brief, brand, or filters)
-    if not req.brief and not req.brand and not req.filters:
+    if not req.brief and not req.brand and not req.filters and not req.refine:
         raise AdCPValidationError()
 
     principal_id: str | None = identity.principal_id
@@ -741,8 +741,15 @@ async def _get_products_impl(req: GetProductsRequest, identity: PublicIdentity) 
     # while dicts lose this type information during serialization
     # adcp 2.16.0+ accepts subclass lists at runtime via BeforeValidator coercion,
     # but mypy still needs cast() due to list invariance in static typing
+    refinement_applied = None
+    if req.buying_mode == "refine":
+        from src.services.package_forecast import refine_products
+
+        eligible_products, refinement_applied = await refine_products(req, eligible_products, identity)
+
     resp = GetProductsResponse(
         products=cast(list[LibraryProduct], eligible_products),
+        refinement_applied=refinement_applied,
         errors=None,
         message=_products_message(len(eligible_products), anonymous=principal_id is None),
     )

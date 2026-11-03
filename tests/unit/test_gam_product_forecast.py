@@ -2,11 +2,73 @@ from datetime import UTC, datetime, timedelta
 
 from adcp.types import DeliveryForecast
 
+from src.core.schemas import Targeting
+from src.core.schemas.pricing import CpmPricingOption
+from src.core.schemas.product import GetProductsRequest, PackageForecastInput
 from src.services.gam_product_forecast_service import (
+    build_package_forecast_line_item,
     fetch_product_availability_forecast,
     map_availability_forecast_to_adcp,
     refresh_cached_product_forecast,
 )
+
+
+def test_refine_package_is_announced_and_preserved() -> None:
+    package = {
+        "pricing_option_id": "cpm_fixed",
+        "budget": 25000,
+        "start_time": "2026-11-01T00:00:00Z",
+        "end_time": "2026-11-30T23:59:59Z",
+        "targeting_overlay": {"geo_countries": ["LT"]},
+    }
+    request = GetProductsRequest.model_validate(
+        {"buying_mode": "refine", "refine": [{"scope": "product", "product_id": "prod_video", "package": package}]}
+    )
+    entry = request.refine[0]
+    assert entry.package.budget == 25000
+    assert [country.root for country in entry.package.targeting_overlay.geo_countries] == ["LT"]
+    schema = GetProductsRequest.model_json_schema()
+    assert any("package" in definition.get("properties", {}) for definition in schema["$defs"].values())
+
+
+def test_package_forecast_uses_exact_flight_and_budget_goal() -> None:
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=25000,
+        start_time="2026-11-01T00:00:00Z",
+        end_time="2026-11-30T23:59:59Z",
+    )
+    pricing = CpmPricingOption(pricing_option_id="fixed", currency="USD", fixed_price=10)
+    line_item = build_package_forecast_line_item(FakeProduct(), package, pricing)
+    assert line_item["primaryGoal"] == {"goalType": "LIFETIME", "unitType": "IMPRESSIONS", "units": 2500000}
+    assert line_item["startDateTime"]["timeZoneId"] == "UTC"
+    assert line_item["startDateTime"]["date"] == {"year": 2026, "month": 11, "day": 1}
+    assert line_item["endDateTime"]["date"] == {"year": 2026, "month": 11, "day": 30}
+    assert line_item["costPerUnit"] == {"currencyCode": "USD", "microAmount": 10000000}
+    assert (line_item["lineItemType"], line_item["priority"]) == ("PRICE_PRIORITY", 12)
+
+
+def test_package_forecast_applies_country_targeting() -> None:
+    class TargetingManager:
+        geo_country_map = {"LT": "2440"}
+
+        def build_targeting(self, overlay):
+            assert overlay.geo_countries[0].root == "LT"
+            return {"geoTargeting": {"targetedLocations": [{"id": "2440"}]}}
+
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-01T00:00:00Z",
+        end_time="2026-11-30T23:59:59Z",
+        targeting_overlay=Targeting(geo_countries=["LT"]),
+    )
+    pricing = CpmPricingOption(pricing_option_id="fixed", currency="USD", fixed_price=10)
+    line_item = build_package_forecast_line_item(FakeProduct(), package, pricing, targeting_manager=TargetingManager())
+    assert line_item["targeting"]["geoTargeting"] == {"targetedLocations": [{"id": "2440"}]}
+    assert line_item["targeting"]["inventoryTargeting"]["targetedAdUnits"] == [
+        {"adUnitId": "123", "includeDescendants": False}
+    ]
 
 
 class FakeForecastService:

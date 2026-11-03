@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 pytest_plugins = [
     "tests.bdd.payload_capture",
     "tests.bdd.scenario_liveness",
+    "tests.bdd.steps.package_forecast_refine",
     "tests.bdd.steps.generic.given_auth",
     "tests.bdd.steps.generic.given_config",
     "tests.bdd.steps.generic.given_entities",

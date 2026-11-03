@@ -479,7 +479,7 @@ DELIVER: dict[Transport, Callable[[BaseTestEnv, ToolAddress, Any, Any], Any]] = 
 # RestDispatcher.
 
 
-def _parse_pinned_response(tool_name: str, raw: dict[str, Any]) -> Any | None:
+def _parse_pinned_response(tool_name: str, raw: dict[str, Any], model: Any = None) -> Any | None:
     """Parse *raw* wire JSON back into ``tool_name``'s pinned SDK response model.
 
     Resolves the one pinned response class for tools that have one, via
@@ -492,7 +492,7 @@ def _parse_pinned_response(tool_name: str, raw: dict[str, Any]) -> Any | None:
     here, so a spec bump that adds/renames a response model widens this
     automatically.
     """
-    model = spec_response_model(tool_name)
+    model = model or spec_response_model(tool_name)
     if model is None:
         return None
     # Through ``revive`` when the model has one: a SERVED document carries the context
@@ -525,7 +525,7 @@ def _unwrap_tool_success(
         # DataPart already came back, which is the same declaration the
         # in-process McpDispatcher/A2ADispatcher success sites make.
         has_wire=True,
-        payload=_parse_pinned_response(tool_name, delivered.payload),
+        payload=_parse_pinned_response(tool_name, delivered.payload, env.RESPONSE_MODEL),
         envelope={"transport": transport.value},
         wire_response=delivered.wire_response,
     )
