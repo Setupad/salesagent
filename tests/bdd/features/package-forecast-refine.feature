@@ -15,6 +15,16 @@ Feature: Check an exact package through product refinement
     And GAM receives the exact UTC flight and a lifetime goal of 2500000 impressions
     And the package check serves version "3.1" without changing the base product or creating a media buy
 
+  @T-package-forecast-vcpm
+  Scenario: Forecast an exact fixed vCPM package with insufficient viewable inventory
+    Given a fixed vCPM package forecast product on GAM with a cached forecast
+    And GAM reports 120000 matched, 87500 available, and 130000 possible impressions
+    When the buyer refines the product at vCPM 10 USD with budget 25000 from "2026-11-10T00:00:00Z" to "2026-11-30T23:59:59Z"
+    Then the package refinement is position-matched and applied to the same product with the exact flight
+    And the package availability forecast reports 87500 impressions as unavailable without a point budget
+    And GAM receives a STANDARD vCPM line item with a lifetime goal of 2500000 viewable impressions
+    And the package check serves version "3.1" without changing the base product or creating a media buy
+
   @T-package-forecast-unsupported
   Scenario: Explain an unsupported package forecast without returning cached availability
     Given a package forecast product on the "mock" adapter with a cached forecast

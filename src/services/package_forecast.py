@@ -7,7 +7,7 @@ from src.core.database.repositories.adapter_config import AdapterConfigRepositor
 from src.core.database.repositories.uow import ProductUoW
 from src.core.exceptions import AdCPProductNotFoundError
 from src.core.resolved_identity import PublicIdentity
-from src.core.schemas.pricing import CpmPricingOption
+from src.core.schemas.pricing import CpmPricingOption, VcpmPricingOption
 from src.core.schemas.product import (
     GetProductsRequest,
     PackageDeliveryForecast,
@@ -44,8 +44,8 @@ def _forecast_package(
         (option.root for option in product.pricing_options if option.pricing_option_id == package.pricing_option_id),
         None,
     )
-    if not isinstance(pricing, CpmPricingOption):
-        raise ValueError("This provider supports exact forecasts for fixed CPM pricing only.")
+    if not isinstance(pricing, (CpmPricingOption, VcpmPricingOption)):
+        raise ValueError("This provider supports exact forecasts for fixed CPM or vCPM pricing only.")
     config = read_adapter_config(identity.tenant_id)
     if config is None or config.adapter_type != "google_ad_manager" or not config.gam_network_code:
         raise ValueError("Exact package forecasting is not supported by this adapter.")
@@ -83,6 +83,8 @@ def _forecast_package(
     )
     assert package.start_time is not None and package.end_time is not None
     forecast["ext"]["forecast_period"] = {"start": package.start_time.isoformat(), "end": package.end_time.isoformat()}
+    if pricing.pricing_model == "vcpm":
+        forecast["ext"]["gam_unit_type"] = line_item["primaryGoal"]["unitType"]
     return PackageDeliveryForecast.model_validate(forecast)
 
 

@@ -23,10 +23,11 @@ by the pinned conformance storyboards and does not announce AdCP 3.3 support.
 }
 ```
 
-An authenticated buyer can check fixed CPM packages on Google Ad Manager.
+An authenticated buyer can check fixed CPM and vCPM packages on Google Ad Manager.
 The package requires `pricing_option_id` and `budget`; optional `impressions`
-overrides the goal derived from budget and CPM. Supply timezone-aware flight
-timestamps. Date-only filter fallbacks use UTC day boundaries.
+overrides the goal derived from budget and the fixed price. For vCPM, this goal
+counts viewable impressions. Supply timezone-aware flight timestamps. Date-only
+filter fallbacks use UTC day boundaries.
 
 The forecast uses the product's inventory and creative placeholders. Country
 inclusions and exclusions are supported. Other overlays, unresolved product
@@ -38,6 +39,13 @@ package checks include `result_product_id` and the resolved flight. Forecast
 points report total available impressions and `availability_status`; insufficient
 inventory is an applied check with `unavailable`, rather than an inability to
 forecast. Point budgets are omitted.
+
+vCPM checks use GAM `STANDARD` line items, `VCPM` cost type, and
+`VIEWABLE_IMPRESSIONS` lifetime goals, including for non-guaranteed products.
+The pinned forecast model has no separate viewable-impressions metric, so vCPM
+availability remains in `metrics.impressions` and is identified by
+`forecast.ext.gam_unit_type: "VIEWABLE_IMPRESSIONS"`. These units follow the
+[GAM forecast goal unit](https://developers.google.com/ad-manager/api/reference/v202602/ForecastService.AvailabilityForecast).
 
 Each check is independent. It creates no media buy, reserves no inventory, and
 does not change the stored product. The base product ID is retained: this local

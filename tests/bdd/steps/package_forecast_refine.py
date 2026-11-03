@@ -20,7 +20,7 @@ class PackageForecastEnv(ProductEnv):
         "gam_client": "src.adapters.gam.client.GAMClientManager",
     }
 
-    def seed_package_product(self, adapter: str) -> None:
+    def seed_package_product(self, adapter: str, pricing_model: str = "cpm") -> None:
         tenant = TenantFactory(tenant_id=self._tenant_id, ad_server=adapter)
         PrincipalFactory(tenant=tenant, principal_id=self._principal_id)
         AdapterConfigFactory(
@@ -46,7 +46,7 @@ class PackageForecastEnv(ProductEnv):
                 "points": [{"metrics": {"impressions": {"mid": 999999}}}],
             },
         )
-        self.pricing = PricingOptionFactory(product=self.product, rate=Decimal("10.00"))
+        self.pricing = PricingOptionFactory(product=self.product, pricing_model=pricing_model, rate=Decimal("10.00"))
         self.base_state = deepcopy(
             (self.product.targeting_template, self.product.implementation_config, self.product.forecast)
         )
@@ -68,7 +68,14 @@ class PackageForecastEnv(ProductEnv):
             {"lineItem": line_item},
             {"includeTargetingCriteriaBreakdown": False, "includeContendingLineItems": False},
         )
-        assert line_item["primaryGoal"] == {"goalType": "LIFETIME", "unitType": "IMPRESSIONS", "units": 2500000}
+        vcpm = self.pricing.pricing_model == "vcpm"
+        assert line_item["primaryGoal"] == {
+            "goalType": "LIFETIME",
+            "unitType": "VIEWABLE_IMPRESSIONS" if vcpm else "IMPRESSIONS",
+            "units": 2500000,
+        }
+        assert line_item["costType"] == self.pricing.pricing_model.upper()
+        assert (line_item["lineItemType"], line_item["priority"]) == ("STANDARD", 8)
         for field, timestamp in (("startDateTime", start), ("endDateTime", end)):
             boundary = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             assert line_item[field] == {
@@ -102,11 +109,17 @@ def package_product(ctx: dict, adapter: str) -> None:
     ctx["env"].seed_package_product(adapter)
 
 
+@given("a fixed vCPM package forecast product on GAM with a cached forecast")
+def vcpm_package_product(ctx: dict) -> None:
+    ctx["env"].seed_package_product("gam", pricing_model="vcpm")
+
+
 @given(parsers.parse("GAM reports {matched:d} matched, {available:d} available, and {possible:d} possible impressions"))
 def gam_availability(ctx: dict, matched: int, available: int, possible: int) -> None:
     ctx["env"].set_gam_availability(matched, available, possible)
 
 
+@when(parsers.parse('the buyer refines the product at vCPM 10 USD with budget {budget:d} from "{start}" to "{end}"'))
 @when(parsers.parse('the buyer refines the product at CPM 10 USD with budget {budget:d} from "{start}" to "{end}"'))
 def refine_package(ctx: dict, budget: int, start: str, end: str) -> None:
     env = ctx["env"]
@@ -173,6 +186,13 @@ def package_availability(ctx: dict) -> None:
 @then("GAM receives the exact UTC flight and a lifetime goal of 2500000 impressions")
 def exact_gam_request(ctx: dict) -> None:
     ctx["env"].assert_exact_gam_request(*ctx["package_flight"])
+
+
+@then("GAM receives a STANDARD vCPM line item with a lifetime goal of 2500000 viewable impressions")
+def exact_vcpm_request(ctx: dict) -> None:
+    ctx["env"].assert_exact_gam_request(*ctx["package_flight"])
+    forecast = wire_field(ctx, "products")[0]["forecast"]
+    assert forecast["ext"]["gam_unit_type"] == "VIEWABLE_IMPRESSIONS"
 
 
 @then("the package refinement is position-matched and unable with non-empty notes and no product forecast")

@@ -1,9 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from adcp.types import DeliveryForecast
 
 from src.core.schemas import Targeting
-from src.core.schemas.pricing import CpmPricingOption
+from src.core.schemas.pricing import CpmPricingOption, VcpmPricingOption
 from src.core.schemas.product import GetProductsRequest, PackageForecastInput
 from src.services.gam_product_forecast_service import (
     build_package_forecast_line_item,
@@ -31,21 +32,35 @@ def test_refine_package_is_announced_and_preserved() -> None:
     assert any("package" in definition.get("properties", {}) for definition in schema["$defs"].values())
 
 
-def test_package_forecast_uses_exact_flight_and_budget_goal() -> None:
+@pytest.mark.parametrize(
+    ("pricing_class", "cost_type", "unit_type", "line_item_type", "priority"),
+    [
+        (CpmPricingOption, "CPM", "IMPRESSIONS", "PRICE_PRIORITY", 12),
+        (VcpmPricingOption, "VCPM", "VIEWABLE_IMPRESSIONS", "STANDARD", 8),
+    ],
+)
+def test_package_forecast_uses_exact_flight_and_budget_goal(
+    pricing_class: type[CpmPricingOption] | type[VcpmPricingOption],
+    cost_type: str,
+    unit_type: str,
+    line_item_type: str,
+    priority: int,
+) -> None:
     package = PackageForecastInput(
         pricing_option_id="fixed",
         budget=25000,
         start_time="2026-11-01T00:00:00Z",
         end_time="2026-11-30T23:59:59Z",
     )
-    pricing = CpmPricingOption(pricing_option_id="fixed", currency="USD", fixed_price=10)
+    pricing = pricing_class(pricing_option_id="fixed", currency="USD", fixed_price=10)
     line_item = build_package_forecast_line_item(FakeProduct(), package, pricing)
-    assert line_item["primaryGoal"] == {"goalType": "LIFETIME", "unitType": "IMPRESSIONS", "units": 2500000}
+    assert line_item["primaryGoal"] == {"goalType": "LIFETIME", "unitType": unit_type, "units": 2500000}
+    assert line_item["costType"] == cost_type
     assert line_item["startDateTime"]["timeZoneId"] == "UTC"
     assert line_item["startDateTime"]["date"] == {"year": 2026, "month": 11, "day": 1}
     assert line_item["endDateTime"]["date"] == {"year": 2026, "month": 11, "day": 30}
     assert line_item["costPerUnit"] == {"currencyCode": "USD", "microAmount": 10000000}
-    assert (line_item["lineItemType"], line_item["priority"]) == ("PRICE_PRIORITY", 12)
+    assert (line_item["lineItemType"], line_item["priority"]) == (line_item_type, priority)
 
 
 def test_package_forecast_applies_country_targeting() -> None:

@@ -4,7 +4,7 @@ from typing import Any
 from adcp.types import DeliveryForecast
 
 from src.adapters.gam.pricing_compatibility import PricingCompatibility
-from src.core.schemas.pricing import CpmPricingOption
+from src.core.schemas.pricing import CpmPricingOption, VcpmPricingOption
 from src.core.schemas.product import PackageForecastInput
 
 DEFAULT_FORECAST_DURATION_DAYS = 30
@@ -14,12 +14,16 @@ FORECAST_LINE_ITEM_PRIORITY = 8
 
 
 def build_package_forecast_line_item(
-    product: Any, package: PackageForecastInput, pricing: CpmPricingOption, *, targeting_manager: Any = None
+    product: Any,
+    package: PackageForecastInput,
+    pricing: CpmPricingOption | VcpmPricingOption,
+    *,
+    targeting_manager: Any = None,
 ) -> dict[str, Any]:
     if not package.start_time or not package.end_time or package.end_time <= package.start_time:
         raise ValueError("Exact start_time and end_time with end after start are required.")
     if not pricing.fixed_price or pricing.fixed_price <= 0:
-        raise ValueError("Package forecasting requires a positive fixed CPM price.")
+        raise ValueError("Package forecasting requires a positive fixed CPM or vCPM price.")
     template = getattr(product, "targeting_template", None) or {}
     if any(value for name, value in template.items() if name != "selectable_key_value_pairs"):
         raise ValueError("Products with targeting templates require a forecast provider that resolves their defaults.")
@@ -28,15 +32,20 @@ def build_package_forecast_line_item(
         raise ValueError("Custom product targeting cannot be forecast exactly by this provider.")
     line_item = build_forecast_line_item(product, currency=pricing.currency, start_time=package.start_time)
     line_item["lineItemType"] = PricingCompatibility.select_line_item_type(
-        "cpm", getattr(product, "delivery_type", None) == "guaranteed"
+        pricing.pricing_model, getattr(product, "delivery_type", None) == "guaranteed"
     )
     line_item["priority"] = PricingCompatibility.get_default_priority(line_item["lineItemType"])
+    line_item["costType"] = PricingCompatibility.get_gam_cost_type(pricing.pricing_model)
     line_item["targeting"].update(_package_overlay_targeting(package, targeting_manager))
     line_item["costPerUnit"]["microAmount"] = int(pricing.fixed_price * 1_000_000)
     goal = package.impressions if package.impressions is not None else package.budget * 1000 / pricing.fixed_price
     if goal <= 0 or int(goal) <= 0:
         raise ValueError("The package must resolve to a positive impression goal.")
-    line_item["primaryGoal"] = {"goalType": "LIFETIME", "unitType": "IMPRESSIONS", "units": int(goal)}
+    line_item["primaryGoal"] = {
+        "goalType": "LIFETIME",
+        "unitType": "VIEWABLE_IMPRESSIONS" if pricing.pricing_model == "vcpm" else "IMPRESSIONS",
+        "units": int(goal),
+    }
     for boundary, value in (("startDateTime", package.start_time), ("endDateTime", package.end_time)):
         line_item[boundary] = _to_gam_datetime(value.astimezone(UTC), "UTC")
     return line_item
