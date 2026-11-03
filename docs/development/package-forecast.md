@@ -30,9 +30,32 @@ counts viewable impressions. Supply timezone-aware flight timestamps. Date-only
 filter fallbacks use UTC day boundaries.
 
 The forecast uses the product's inventory and creative placeholders. Country
-inclusions and exclusions are supported. Other overlays, unresolved product
+inclusions and exclusions and buyer-selectable GAM key/value overlays are
+supported, including Cxense segments declared by the product. Other overlays, unresolved product
 targeting defaults, unsupported adapters, auction prices, and free-text asks
 return `unable` with notes. They never substitute a cached forecast.
+
+Custom targeting uses `targeting_overlay.custom.gam.key_value_pairs` (or its
+`key_values` alias, one at a time). Keys and values must match the product's
+`ext.prebid.selectable_key_value_pairs`; send the stored value, not its display
+label. The forecast looks up existing GAM value IDs without creating values.
+A missing value returns `unable` rather than an untargeted forecast.
+
+For example, if the product declares `CxSegments` with the stored value
+`female`, a combined overlay is:
+
+```json
+{
+  "geo_countries": ["LV"],
+  "custom": {"gam": {"key_value_pairs": {"CxSegments": ["female"]}}}
+}
+```
+
+Country mappings load from `src/adapters/gam_geo_mappings.json`. The manager's
+path follows its location under `gam/managers`; the old path left every country
+unmapped after that module moved. Latvia, Lithuania, and Estonia are included,
+with IDs verified against the
+[Google geo target CSV](https://developers.google.com/ad-manager/api/geotargets).
 
 Every entry has a position-matched `refinement_applied` outcome. Successful
 package checks include `result_product_id` and the resolved flight. Forecast

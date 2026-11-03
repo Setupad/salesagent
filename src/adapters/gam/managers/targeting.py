@@ -44,6 +44,8 @@ class GAMTargetingManager:
         tenant_id: str,
         gam_client: Any | None = None,
         targeting_config: dict[str, Any] | None = None,
+        *,
+        allow_value_creation: bool = True,
     ):
         """Initialize targeting manager.
 
@@ -56,6 +58,7 @@ class GAMTargetingManager:
         """
         self.tenant_id = tenant_id
         self.gam_client = gam_client
+        self.allow_value_creation = allow_value_creation
         self.geo_country_map: dict[str, str] = {}
         self.geo_region_map: dict[str, dict[str, str]] = {}
         self.geo_metro_map: dict[str, str] = {}
@@ -90,7 +93,9 @@ class GAMTargetingManager:
         """
         try:
             # Look for the geo mappings file relative to the adapters directory
-            mapping_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "gam_geo_mappings.json")
+            mapping_file = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "gam_geo_mappings.json"
+            )
             with open(mapping_file) as f:
                 geo_data = json.load(f)
 
@@ -321,6 +326,10 @@ class GAMTargetingManager:
                 value_id = int(response.results[0].id)
                 logger.info(f"Found existing custom targeting value: {value_name} (ID: {value_id})")
                 return value_id
+
+            if not self.allow_value_creation:
+                logger.warning("Custom targeting value %r was not found in GAM for key %s", value_name, key_id)
+                raise AdCPAdapterError()
 
             # Value doesn't exist, create it
             value = {

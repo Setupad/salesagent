@@ -3,6 +3,7 @@
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 from pytest_bdd import given, parsers, then, when
 
@@ -20,7 +21,7 @@ class PackageForecastEnv(ProductEnv):
         "gam_client": "src.adapters.gam.client.GAMClientManager",
     }
 
-    def seed_package_product(self, adapter: str, pricing_model: str = "cpm") -> None:
+    def seed_package_product(self, adapter: str, pricing_model: str = "cpm", overlay: str = "") -> None:
         tenant = TenantFactory(tenant_id=self._tenant_id, ad_server=adapter)
         PrincipalFactory(tenant=tenant, principal_id=self._principal_id)
         AdapterConfigFactory(
@@ -28,11 +29,14 @@ class PackageForecastEnv(ProductEnv):
             adapter_type="google_ad_manager" if adapter == "gam" else adapter,
             gam_network_code="123456" if adapter == "gam" else None,
             gam_refresh_token="test-refresh-token" if adapter == "gam" else None,
+            custom_targeting_keys={"CxSegments": "1234"},
         )
         now = datetime.now(UTC)
         self.product = ProductFactory(
             tenant=tenant,
-            targeting_template={},
+            targeting_template={"selectable_key_value_pairs": {"CxSegments": {"values": ["female"]}}}
+            if overlay
+            else {},
             implementation_config={
                 "targeted_ad_unit_ids": ["123"],
                 "creative_placeholders": [{"width": 300, "height": 250}],
@@ -47,6 +51,14 @@ class PackageForecastEnv(ProductEnv):
             },
         )
         self.pricing = PricingOptionFactory(product=self.product, pricing_model=pricing_model, rate=Decimal("10.00"))
+        self.package_overlay = {"geo_countries": ["LV"]} if overlay.startswith("LV") else {}
+        if "Cxense Female" in overlay:
+            self.package_overlay["custom"] = {"gam": {"key_value_pairs": {"CxSegments": ["female"]}}}
+        self.mock[
+            "gam_client"
+        ].return_value.get_client.return_value.GetService.return_value.getCustomTargetingValuesByStatement.return_value = SimpleNamespace(
+            results=[] if "missing" in overlay else [SimpleNamespace(id=5678)]
+        )
         self.base_state = deepcopy(
             (self.product.targeting_template, self.product.implementation_config, self.product.forecast)
         )
@@ -90,7 +102,37 @@ class PackageForecastEnv(ProductEnv):
             {"adUnitId": "123", "includeDescendants": True}
         ]
 
+    def assert_exact_targeting(self) -> None:
+        manager = self.mock["gam_client"].return_value
+        targeting = manager.get_service.return_value.getAvailabilityForecast.call_args.args[0]["lineItem"]["targeting"]
+        if "geo_countries" in self.package_overlay:
+            assert targeting["geoTargeting"] == {"targetedLocations": [{"id": "2428"}]}
+        else:
+            assert "geoTargeting" not in targeting
+        if "custom" in self.package_overlay:
+            assert targeting["customTargeting"] == {
+                "xsi_type": "CustomCriteriaSet",
+                "logicalOperator": "AND",
+                "children": [{"xsi_type": "CustomCriteria", "keyId": 1234, "operator": "IS", "valueIds": [5678]}],
+            }
+            service = manager.get_client.return_value.GetService.return_value
+            service.getCustomTargetingValuesByStatement.assert_called_once_with(
+                {"query": "WHERE customTargetingKeyId = 1234 AND name = 'female'"}
+            )
+            service.createCustomTargetingValues.assert_not_called()
+        else:
+            assert "customTargeting" not in targeting
+            manager.get_client.assert_not_called()
+
+    def assert_missing_value_not_forecast(self) -> None:
+        manager = self.mock["gam_client"].return_value
+        manager.get_service.assert_not_called()
+        manager.get_client.return_value.GetService.return_value.createCustomTargetingValues.assert_not_called()
+
     def assert_read_only(self) -> None:
+        self.mock[
+            "gam_client"
+        ].return_value.get_client.return_value.GetService.return_value.createCustomTargetingValues.assert_not_called()
         with ProductUoW(self._tenant_id) as uow:
             products = uow.products.list_all()
             assert [product.product_id for product in products] == [self.product.product_id]
@@ -112,6 +154,11 @@ def package_product(ctx: dict, adapter: str) -> None:
 @given("a fixed vCPM package forecast product on GAM with a cached forecast")
 def vcpm_package_product(ctx: dict) -> None:
     ctx["env"].seed_package_product("gam", pricing_model="vcpm")
+
+
+@given(parsers.parse('a fixed vCPM forecast product with buyer-selectable targeting for "{overlay}"'))
+def targeted_package_product(ctx: dict, overlay: str) -> None:
+    ctx["env"].seed_package_product("gam", pricing_model="vcpm", overlay=overlay)
 
 
 @given(parsers.parse("GAM reports {matched:d} matched, {available:d} available, and {possible:d} possible impressions"))
@@ -136,6 +183,7 @@ def refine_package(ctx: dict, budget: int, start: str, end: str) -> None:
                     "budget": budget,
                     "start_time": start,
                     "end_time": end,
+                    "targeting_overlay": env.package_overlay,
                 },
             }
         ],
@@ -193,6 +241,20 @@ def exact_vcpm_request(ctx: dict) -> None:
     ctx["env"].assert_exact_gam_request(*ctx["package_flight"])
     forecast = wire_field(ctx, "products")[0]["forecast"]
     assert forecast["ext"]["gam_unit_type"] == "VIEWABLE_IMPRESSIONS"
+
+
+@then("GAM receives every requested country and buyer-selectable segment without creating targeting values")
+def exact_package_targeting(ctx: dict) -> None:
+    ctx["env"].assert_exact_targeting()
+
+
+@then("the package check refuses the missing GAM value without forecasting or creating it")
+def missing_package_targeting(ctx: dict) -> None:
+    outcome = wire_field(ctx, "refinement_applied")[0]
+    assert (outcome["product_id"], outcome["status"]) == (ctx["env"].product.product_id, "unable")
+    assert outcome["notes"] == "The forecasting service could not complete this exact package check."
+    assert "forecast" not in wire_field(ctx, "products")[0]
+    ctx["env"].assert_missing_value_not_forecast()
 
 
 @then("the package refinement is position-matched and unable with non-empty notes and no product forecast")
