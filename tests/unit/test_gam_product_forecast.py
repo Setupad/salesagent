@@ -311,7 +311,7 @@ def test_fetch_product_availability_forecast_calls_gam_forecast_service() -> Non
     assert service.line_item["lineItem"]["lineItemType"] == "STANDARD"
     assert service.line_item["lineItem"]["targeting"]["inventoryTargeting"] == {
         "targetedAdUnits": [{"adUnitId": "123", "includeDescendants": False}],
-        "targetedPlacements": [{"placementId": "456"}],
+        "targetedPlacementIds": [456],
     }
     assert service.line_item["lineItem"]["creativePlaceholders"] == [
         {
@@ -330,6 +330,21 @@ def test_fetch_product_availability_forecast_calls_gam_forecast_service() -> Non
     assert service.line_item["lineItem"]["startDateTime"]["date"] == {"year": 2026, "month": 1, "day": 1}
     assert service.line_item["lineItem"]["endDateTime"]["date"] == {"year": 2026, "month": 1, "day": 31}
     DeliveryForecast.model_validate(forecast)
+
+
+def test_cached_vcpm_forecast_counts_viewable_impressions() -> None:
+    class VcpmProduct(FakeProduct):
+        @property
+        def effective_implementation_config(self):
+            return {**super().effective_implementation_config, "cost_type": "VCPM"}
+
+    service = FakeForecastService()
+    forecast = fetch_product_availability_forecast(
+        FakeGAMClientManager(service), VcpmProduct(), currency="EUR", now=datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    )
+    assert service.line_item["lineItem"]["costType"] == "VCPM"
+    assert service.line_item["lineItem"]["primaryGoal"]["unitType"] == "VIEWABLE_IMPRESSIONS"
+    assert forecast["ext"]["gam_unit_type"] == "VIEWABLE_IMPRESSIONS"
 
 
 def test_product_availability_forecast_uses_standard_line_item_for_price_priority_product() -> None:

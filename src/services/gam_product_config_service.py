@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class GAMProductConfigService:
 
     @staticmethod
     def generate_default_config(
-        delivery_type: str, formats: list[str] | None = None, pricing_model: str | None = None
+        delivery_type: str, formats: Sequence[str | dict[str, Any]] | None = None, pricing_model: str | None = None
     ) -> dict[str, Any]:
         """Generate default GAM implementation config based on product delivery type.
 
@@ -90,7 +91,7 @@ class GAMProductConfigService:
         return base_config
 
     @staticmethod
-    def _generate_creative_placeholders(formats: list[str]) -> list[dict[str, Any]]:
+    def _generate_creative_placeholders(formats: Sequence[str | dict[str, Any]]) -> list[dict[str, Any]]:
         """Generate creative placeholders from format IDs.
 
         Args:
@@ -118,40 +119,28 @@ class GAMProductConfigService:
             # 1. Simple string: "display_300x250"
             # 2. Dict with format_id: {"format_id": "display_300x250", "name": "...", ...}
             if isinstance(format_item, dict):
-                format_id = format_item.get("format_id", "")
+                format_id = format_item.get("id") or format_item.get("format_id", "")
             else:
                 format_id = format_item
 
-            if format_id in format_dimensions:
+            if isinstance(format_item, dict) and format_item.get("width") and format_item.get("height"):
+                width, height = int(format_item["width"]), int(format_item["height"])
+            elif format_id in format_dimensions:
                 width, height = format_dimensions[format_id]
-                placeholders.append(
-                    {
-                        "width": width,
-                        "height": height,
-                        "expected_creative_count": 1,
-                        "is_native": False,
-                    }
-                )
             elif format_id.startswith("native_"):
-                # Native format - use default dimensions
-                placeholders.append(
-                    {
-                        "width": 1,
-                        "height": 1,
-                        "expected_creative_count": 1,
-                        "is_native": True,
-                    }
-                )
+                width, height = 1, 1
             elif format_id.startswith("video_"):
-                # Video format - use standard video dimensions
-                placeholders.append(
-                    {
-                        "width": 640,
-                        "height": 480,
-                        "expected_creative_count": 1,
-                        "is_native": False,
-                    }
-                )
+                width, height = 640, 480
+            else:
+                continue
+            placeholder = {
+                "width": width,
+                "height": height,
+                "expected_creative_count": 1,
+                "is_native": format_id.startswith("native_"),
+            }
+            if placeholder not in placeholders:
+                placeholders.append(placeholder)
 
         # If no placeholders generated, return default
         if not placeholders:

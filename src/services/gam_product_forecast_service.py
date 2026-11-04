@@ -94,13 +94,16 @@ def fetch_product_availability_forecast(
     line_item = build_forecast_line_item(product, currency=currency, start_time=requested_at)
     options = {"includeTargetingCriteriaBreakdown": False, "includeContendingLineItems": False}
     gam_forecast = service.getAvailabilityForecast({"lineItem": line_item}, options)
-    return map_availability_forecast_to_adcp(
+    forecast = map_availability_forecast_to_adcp(
         gam_forecast,
         currency=currency,
         product_id=product.product_id,
         generated_at=requested_at,
         valid_until=requested_at + timedelta(hours=DEFAULT_FORECAST_TTL_HOURS),
     )
+    if line_item["costType"] == "VCPM":
+        forecast["ext"]["gam_unit_type"] = line_item["primaryGoal"]["unitType"]
+    return forecast
 
 
 def refresh_cached_product_forecast(
@@ -145,11 +148,13 @@ def build_forecast_line_item(
         "creativePlaceholders": _build_creative_placeholders(config),
         "lineItemType": FORECAST_LINE_ITEM_TYPE,
         "priority": FORECAST_LINE_ITEM_PRIORITY,
-        "costType": "CPM",
+        "costType": "VCPM" if config.get("cost_type") == "VCPM" else "CPM",
         "costPerUnit": {"currencyCode": currency, "microAmount": 0},
         "primaryGoal": {
             "goalType": "LIFETIME",
-            "unitType": config.get("primary_goal_unit_type", "IMPRESSIONS"),
+            "unitType": "VIEWABLE_IMPRESSIONS"
+            if config.get("cost_type") == "VCPM"
+            else config.get("primary_goal_unit_type", "IMPRESSIONS"),
             "units": config.get("forecast_goal_units", 1),
         },
         "startDateTime": _to_gam_datetime(start_time, config.get("time_zone", "America/New_York")),
@@ -168,9 +173,7 @@ def _build_inventory_targeting(config: dict[str, Any]) -> dict[str, Any]:
             {"adUnitId": ad_unit_id, "includeDescendants": include_descendants} for ad_unit_id in targeted_ad_unit_ids
         ]
     if targeted_placement_ids:
-        inventory_targeting["targetedPlacements"] = [
-            {"placementId": placement_id} for placement_id in targeted_placement_ids
-        ]
+        inventory_targeting["targetedPlacementIds"] = [int(placement_id) for placement_id in targeted_placement_ids]
     return {"inventoryTargeting": inventory_targeting} if inventory_targeting else {}
 
 
