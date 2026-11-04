@@ -1,6 +1,20 @@
 from src.services.gam_product_config_service import GAMProductConfigService
 
 
+def test_clear_empty_inventory_targeting_preserves_placement_and_omitted_fields() -> None:
+    config = {"targeted_ad_unit_ids": ["21718154670", "21718112186"], "targeted_placement_ids": ["29076148"]}
+    assert GAMProductConfigService.clear_empty_inventory_targeting(
+        config, {"targeted_ad_unit_ids": "  ", "targeted_placement_ids": "29076148"}
+    ) == {"targeted_placement_ids": ["29076148"]}
+    assert GAMProductConfigService.clear_empty_inventory_targeting(config, {}) == config
+    assert (
+        GAMProductConfigService.clear_empty_inventory_targeting(
+            config, {"targeted_ad_unit_ids": "", "targeted_placement_ids": ""}
+        )
+        == {}
+    )
+
+
 def test_default_config_preserves_declared_format_dimensions() -> None:
     formats = [
         {"id": "display_image", "width": 1200, "height": 300},

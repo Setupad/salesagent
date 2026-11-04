@@ -1767,6 +1767,8 @@ def edit_product(tenant_id, product_id):
                             id.strip() for id in placement_ids.split(",") if id.strip()
                         ]
 
+                    base_config = GAMProductConfigService.clear_empty_inventory_targeting(base_config, form_data)
+
                     base_config["include_descendants"] = form_data.get("include_descendants") == "on"
 
                     # Add GAM settings

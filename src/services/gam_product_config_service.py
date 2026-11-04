@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -10,6 +10,14 @@ logger = logging.getLogger(__name__)
 
 class GAMProductConfigService:
     """Handles GAM-specific product configuration management."""
+
+    @staticmethod
+    def clear_empty_inventory_targeting(config: dict[str, Any], form_data: Mapping[str, str]) -> dict[str, Any]:
+        updated_config = config.copy()
+        for config_key in ("targeted_ad_unit_ids", "targeted_placement_ids"):
+            if config_key in form_data and not form_data[config_key].strip():
+                updated_config.pop(config_key, None)
+        return updated_config
 
     @staticmethod
     def get_effective_line_item_type(
