@@ -10,6 +10,7 @@ import logging
 import os
 from typing import Any
 
+from adcp.types import DaypartTarget
 from adcp.types.generated_poc.enums.metro_system import MetroAreaSystem
 
 from src.core.errors.details import CapabilityRefusalDetails
@@ -18,9 +19,39 @@ from src.core.exceptions import (
     AdCPCapabilityNotSupportedError,
     AdCPConfigurationError,
     AdCPSalesAgentError,
+    AdCPValidationError,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def build_daypart_targeting(windows: list[DaypartTarget] | None) -> dict[str, Any]:
+    if not windows:
+        return {}
+    intervals: dict[str, list[tuple[int, int]]] = {}
+    for window_index, window in enumerate(windows):
+        if window.end_hour <= window.start_hour:
+            raise AdCPValidationError(field=f"targeting_overlay.daypart_targets[{window_index}].end_hour")
+        for day in window.days:
+            intervals.setdefault(day.value.upper(), []).append((window.start_hour, window.end_hour))
+
+    day_parts: list[dict[str, Any]] = []
+    for day_name, ranges in intervals.items():
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(ranges):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        day_parts.extend(
+            {
+                "dayOfWeek": day_name,
+                "startTime": {"hour": start, "minute": "ZERO"},
+                "endTime": {"hour": end, "minute": "ZERO"},
+            }
+            for start, end in merged
+        )
+    return {"dayParts": day_parts, "timeZone": "PUBLISHER"}
 
 
 class GAMTargetingManager:
@@ -686,6 +717,10 @@ class GAMTargetingManager:
             return {}
 
         gam_targeting: dict[str, Any] = {}
+
+        daypart_targeting = build_daypart_targeting(targeting_overlay.daypart_targets)
+        if daypart_targeting:
+            gam_targeting["dayPartTargeting"] = daypart_targeting
 
         # Geographic targeting
         geo_targeting: dict[str, Any] = {}

@@ -6,6 +6,7 @@ How to configure Google Ad Manager (GAM) trafficking settings for products in th
 
 - [Overview](#overview)
 - [Quick start](#quick-start)
+- [Day and hour targeting](#day-and-hour-targeting)
 - [Configuration workflow](#configuration-workflow)
 - [Line item type selection](#line-item-type-selection)
 - [Field reference](#field-reference)
@@ -44,6 +45,47 @@ For where adapters sit in the overall system, see [Architecture](../../developme
 4. Adjust priority and other settings if needed.
 5. Save the configuration.
 6. Create a media buy. The adapter creates the GAM line items from the stored configuration. If a product still has no configuration at media buy time, the system generates defaults then.
+
+## Day and hour targeting
+
+Set `packages[].targeting_overlay.daypart_targets` when creating a media buy
+to restrict GAM delivery to recurring weekly windows. For example, this overlay
+targets every Friday from 12:00 inclusive to 14:00 exclusive during the flight:
+
+```json
+{
+  "daypart_targets": [
+    {
+      "days": ["friday"],
+      "start_hour": 12,
+      "end_hour": 14
+    }
+  ]
+}
+```
+
+Each entry can name multiple days. Add separate entries for separate windows.
+Hours use the GAM network's publisher time zone (`PUBLISHER`), not the buyer's
+browser time zone or the campaign timestamp's offset. Omit `daypart_targets`
+to leave delivery unrestricted by day and hour.
+
+The accepted AdCP fields use whole hours: `start_hour` is 0-23, `end_hour` is
+1-24, and the end must follow the start. Use 0-24 for an entire day. Split an
+overnight window into two entries on consecutive days. The adapter merges
+overlapping, adjacent, and duplicate windows on each day before sending them
+to GAM. Labels remain descriptive and do not change delivery.
+
+This integration applies during line item creation. `update_media_buy` stores
+targeting changes locally but does not synchronize them to GAM; avoid using it
+to change a live delivery schedule.
+
+Contract: [AdCP 3.1.1 daypart target schema](https://github.com/adcontextprotocol/adcp/blob/v3.1.1/dist/schemas/3.1.1/core/daypart-target.json)
+and [targeting overlay schema](https://github.com/adcontextprotocol/adcp/blob/v3.1.1/dist/schemas/3.1.1/core/targeting.json).
+The pinned conformance storyboards do not grade this translation.
+GAM supports quarter-hour values, but the pinned AdCP request exposes only hours.
+See [GAM daypart targeting](https://developers.google.com/ad-manager/api/reference/v202511/LineItemService.DayPartTargeting),
+[time of day](https://developers.google.com/ad-manager/api/reference/v202511/LineItemService.TimeOfDay),
+and [daypart errors](https://developers.google.com/ad-manager/api/reference/v202511/LineItemService.DayPartTargetingError).
 
 ## Configuration workflow
 
