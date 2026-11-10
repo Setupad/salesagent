@@ -130,6 +130,7 @@ class ToolSpec[Req: BuyerRequest, Id: PublicIdentity]:
     impl: ToolImpl[Req, Id]
     rest: RestBinding | None
     a2a: bool = True
+    description: str | None = None
 
     def __post_init__(self) -> None:
         """Refuse, at load, an identity annotation that disagrees with the DTO about the account.
@@ -212,6 +213,15 @@ _TOOLS: dict[str, ToolSpec] = {
         dto=GetProductsRequest,
         impl=_get_products_impl,
         rest=RestBinding("POST", "/products"),
+        description=(
+            "Discover products or forecast an exact package without creating or reserving inventory. "
+            "For exact geo, frequency, and daypart forecasts, use buying_mode='refine' with "
+            "refine=[{scope:'product', product_id:'...', action:'include', package:{pricing_option_id:'...', "
+            "budget:1000, start_time:'...', end_time:'...', targeting_overlay:{...}}}]. "
+            "Set constraints in refine product package.targeting_overlay. The brief is discovery text, "
+            "not proof of applied targeting. Package forecasting is a seller extension to AdCP 3.1.1. "
+            "GAM frequency caps apply per package, not across packages."
+        ),
     ),
     "list_creative_formats": ToolSpec(
         dto=ListCreativeFormatsRequest,

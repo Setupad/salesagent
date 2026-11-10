@@ -183,9 +183,9 @@ class TestFrequencyCapInheritance:
         fc = FrequencyCap(max_impressions=5, suppress_minutes=60, scope="package")
         assert fc.scope == "package"
 
-    def test_scope_default_media_buy(self):
+    def test_scope_default_package(self):
         fc = FrequencyCap(max_impressions=5, suppress_minutes=60)
-        assert fc.scope == "media_buy"
+        assert fc.scope == "package"
 
     def test_suppress_minutes_accepts_float(self):
         fc = FrequencyCap(max_impressions=5, suppress_minutes=60.5)

@@ -3,6 +3,8 @@ from typing import Any
 
 from adcp.types import DeliveryForecast
 
+from src.adapters.gam.frequency import build_frequency_caps
+from src.adapters.gam.managers.targeting import build_daypart_targeting
 from src.adapters.gam.pricing_compatibility import PricingCompatibility
 from src.core.schemas.pricing import CpmPricingOption, VcpmPricingOption
 from src.core.schemas.product import PackageForecastInput
@@ -41,6 +43,13 @@ def build_package_forecast_line_item(
     if violations:
         raise ValueError("; ".join(violations))
     line_item["targeting"].update(_package_overlay_targeting(package, targeting_manager))
+    caps = build_frequency_caps(
+        config.get("frequency_caps"),
+        package.targeting_overlay.frequency_cap if package.targeting_overlay else None,
+        for_forecast=True,
+    )
+    if caps:
+        line_item["frequencyCaps"] = caps
     line_item["costPerUnit"]["microAmount"] = int(pricing.fixed_price * 1_000_000)
     goal = package.impressions if package.impressions is not None else package.budget * 1000 / pricing.fixed_price
     if goal <= 0 or int(goal) <= 0:
@@ -60,8 +69,10 @@ def _package_overlay_targeting(package: PackageForecastInput, manager: Any) -> d
     if overlay is None:
         return {}
     supplied = {name for name in overlay.model_fields_set if getattr(overlay, name) is not None}
-    if supplied - {"geo_countries", "geo_countries_exclude", "custom"}:
-        raise ValueError("Exact package overlays support countries and buyer-selectable GAM key/value targeting.")
+    if supplied - {"geo_countries", "geo_countries_exclude", "custom", "daypart_targets", "frequency_cap"}:
+        raise ValueError(
+            "Exact package overlays support countries, GAM key/value targeting, dayparts and frequency caps."
+        )
     if overlay.custom:
         gam = overlay.custom.get("gam")
         if (
@@ -72,8 +83,9 @@ def _package_overlay_targeting(package: PackageForecastInput, manager: Any) -> d
             or not all(isinstance(pairs, dict) for pairs in gam.values())
         ):
             raise ValueError("Exact package custom overlays require GAM key/value targeting.")
-    if not supplied:
-        return {}
+    if not supplied & {"geo_countries", "geo_countries_exclude", "custom"}:
+        dayparts = build_daypart_targeting(overlay.daypart_targets)
+        return {"dayPartTargeting": dayparts} if dayparts else {}
     if manager is None:
         raise ValueError("Geographic targeting is unavailable.")
     for country in [*(overlay.geo_countries or []), *(overlay.geo_countries_exclude or [])]:
@@ -142,7 +154,7 @@ def build_forecast_line_item(
     config = product.effective_implementation_config
     end_time = start_time + timedelta(days=duration_days)
     targeting = _build_inventory_targeting(config)
-    return {
+    line_item = {
         "name": f"{duration_days}d Availability Forecast - {product.name}",
         "targeting": targeting,
         "creativePlaceholders": _build_creative_placeholders(config),
@@ -160,6 +172,10 @@ def build_forecast_line_item(
         "startDateTime": _to_gam_datetime(start_time, config.get("time_zone", "America/New_York")),
         "endDateTime": _to_gam_datetime(end_time, config.get("time_zone", "America/New_York")),
     }
+    caps = build_frequency_caps(config.get("frequency_caps"), for_forecast=True)
+    if caps:
+        line_item["frequencyCaps"] = caps
+    return line_item
 
 
 def _build_inventory_targeting(config: dict[str, Any]) -> dict[str, Any]:

@@ -215,7 +215,9 @@ class PackageForecastInput(SalesAgentBaseModel):
     impressions: Annotated[float | None, PackageRequest.model_fields["impressions"]]
     start_time: Annotated[AwareDatetime | None, PackageRequest.model_fields["start_time"]]
     end_time: Annotated[AwareDatetime | None, PackageRequest.model_fields["end_time"]]
-    targeting_overlay: Annotated[Targeting | None, PackageRequest.model_fields["targeting_overlay"]]
+    targeting_overlay: Annotated[Targeting | None, PackageRequest.model_fields["targeting_overlay"]] = Field(
+        description="Exact geo, frequency, and daypart constraints for this package forecast. GAM frequency caps apply per package, not across packages."
+    )
 
 
 class ProductRefinement(LibraryProductRefinement):
@@ -289,10 +291,16 @@ class GetProductsRequest(BuyerRequest, LibraryGetProductsRequest):
 
     model_config = ConfigDict(extra=get_pydantic_extra_mode())
 
+    brief: Annotated[str | None, LibraryGetProductsRequest.model_fields["brief"]] = Field(
+        description="Discovery text describing buyer intent; not proof of applied targeting. For exact forecasts, use buying_mode='refine' and refine product package.targeting_overlay."
+    )
+
     refine: Annotated[
         list[Annotated[LibraryRefine, ValidateAs(Refinement, lambda value: value)]] | None,
         LibraryGetProductsRequest.model_fields["refine"],
-    ]
+    ] = Field(
+        description="For exact package forecasts, set buying_mode='refine' and include a product refinement with scope='product', product_id, action='include', and package.targeting_overlay. Supply package pricing_option_id, budget, and flight dates. Package forecasting is a seller extension to AdCP 3.1.1."
+    )
 
     # Widen buying_mode from Literal['wholesale'] to str|None (we accept any mode or none)
     buying_mode: str | None = Field(  # type: ignore[assignment]

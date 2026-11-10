@@ -7,6 +7,7 @@ from src.core.schemas import Targeting
 from src.core.schemas.pricing import CpmPricingOption, VcpmPricingOption
 from src.core.schemas.product import GetProductsRequest, PackageForecastInput
 from src.services.gam_product_forecast_service import (
+    build_forecast_line_item,
     build_package_forecast_line_item,
     fetch_product_availability_forecast,
     map_availability_forecast_to_adcp,
@@ -84,6 +85,139 @@ def test_package_forecast_applies_country_targeting() -> None:
     assert line_item["targeting"]["inventoryTargeting"]["targetedAdUnits"] == [
         {"adUnitId": "123", "includeDescendants": False}
     ]
+
+
+def test_package_forecast_combines_dayparts_and_frequency() -> None:
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-01T00:00:00Z",
+        end_time="2026-11-30T23:59:59Z",
+        targeting_overlay=Targeting(
+            daypart_targets=[
+                {"days": ["friday"], "start_hour": 12, "end_hour": 14},
+                {"days": ["friday"], "start_hour": 13, "end_hour": 16},
+            ],
+            frequency_cap={"max_impressions": 5, "per": "devices", "window": {"interval": 1, "unit": "days"}},
+        ),
+    )
+    pricing = VcpmPricingOption(pricing_option_id="fixed", currency="EUR", fixed_price=10)
+    line_item = build_package_forecast_line_item(FakeProduct(), package, pricing)
+    assert line_item["frequencyCaps"] == [{"maxImpressions": 5, "numTimeUnits": 1, "timeUnit": "DAY"}]
+    assert line_item["targeting"] == {
+        "inventoryTargeting": {
+            "targetedAdUnits": [{"adUnitId": "123", "includeDescendants": False}],
+            "targetedPlacementIds": [456],
+        },
+        "dayPartTargeting": {
+            "timeZone": "PUBLISHER",
+            "dayParts": [
+                {
+                    "dayOfWeek": "FRIDAY",
+                    "startTime": {"hour": 12, "minute": "ZERO"},
+                    "endTime": {"hour": 16, "minute": "ZERO"},
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize("overlay", [None, Targeting(), Targeting(daypart_targets=None)])
+def test_package_forecast_omits_absent_constraints(overlay: Targeting | None) -> None:
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-01T00:00:00Z",
+        end_time="2026-11-30T23:59:59Z",
+        targeting_overlay=overlay,
+    )
+    line_item = build_package_forecast_line_item(
+        FakeProduct(), package, VcpmPricingOption(pricing_option_id="fixed", currency="EUR", fixed_price=10)
+    )
+    assert "frequencyCaps" not in line_item
+    assert "dayPartTargeting" not in line_item["targeting"]
+
+
+@pytest.mark.parametrize("end_hour", [12, 10])
+def test_package_forecast_rejects_invalid_daypart_end(end_hour: int) -> None:
+    from src.core.exceptions import AdCPValidationError
+
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-01T00:00:00Z",
+        end_time="2026-11-30T23:59:59Z",
+        targeting_overlay=Targeting(daypart_targets=[{"days": ["friday"], "start_hour": 12, "end_hour": end_hour}]),
+    )
+    with pytest.raises(AdCPValidationError) as error:
+        build_package_forecast_line_item(
+            FakeProduct(), package, VcpmPricingOption(pricing_option_id="fixed", currency="EUR", fixed_price=10)
+        )
+    assert error.value.field == "targeting_overlay.daypart_targets[0].end_hour"
+
+
+def test_package_forecast_keeps_product_and_buyer_frequency_caps() -> None:
+    class CappedProduct(FakeProduct):
+        @property
+        def effective_implementation_config(self):
+            return {
+                **super().effective_implementation_config,
+                "frequency_caps": [{"max_impressions": 8, "time_range": 1, "time_unit": "DAY"}],
+            }
+
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-01T00:00:00Z",
+        end_time="2026-11-30T23:59:59Z",
+        targeting_overlay=Targeting(frequency_cap={"suppress_minutes": 90}),
+    )
+    line_item = build_package_forecast_line_item(
+        CappedProduct(), package, VcpmPricingOption(pricing_option_id="fixed", currency="EUR", fixed_price=10)
+    )
+    assert line_item["frequencyCaps"] == [
+        {"maxImpressions": 8, "numTimeUnits": 1, "timeUnit": "DAY"},
+        {"maxImpressions": 1, "numTimeUnits": 90, "timeUnit": "MINUTE"},
+    ]
+    product_forecast = build_forecast_line_item(
+        CappedProduct(), currency="EUR", start_time=datetime(2026, 11, 1, tzinfo=UTC)
+    )
+    assert product_forecast["frequencyCaps"] == [{"maxImpressions": 8, "numTimeUnits": 1, "timeUnit": "DAY"}]
+
+
+def test_package_forecast_combines_country_daypart_and_frequency_with_manager() -> None:
+    from src.adapters.gam.managers.targeting import GAMTargetingManager
+
+    manager = GAMTargetingManager("test", targeting_config={"custom_targeting_keys": {}})
+    package = PackageForecastInput(
+        pricing_option_id="fixed",
+        budget=100,
+        start_time="2026-11-01T00:00:00Z",
+        end_time="2026-11-30T23:59:59Z",
+        targeting_overlay=Targeting(
+            geo_countries=["LV"],
+            daypart_targets=[{"days": ["monday"], "start_hour": 0, "end_hour": 24}],
+            frequency_cap={"suppress_minutes": 90},
+        ),
+    )
+    line_item = build_package_forecast_line_item(
+        FakeProduct(),
+        package,
+        VcpmPricingOption(pricing_option_id="fixed", currency="EUR", fixed_price=10),
+        targeting_manager=manager,
+    )
+    assert line_item["targeting"]["geoTargeting"] == {"targetedLocations": [{"id": "2428"}]}
+    assert line_item["targeting"]["dayPartTargeting"] == {
+        "timeZone": "PUBLISHER",
+        "dayParts": [
+            {
+                "dayOfWeek": "MONDAY",
+                "startTime": {"hour": 0, "minute": "ZERO"},
+                "endTime": {"hour": 24, "minute": "ZERO"},
+            }
+        ],
+    }
+    assert line_item["frequencyCaps"] == [{"maxImpressions": 1, "numTimeUnits": 90, "timeUnit": "MINUTE"}]
 
 
 def test_package_forecast_uses_buyer_selectable_custom_targeting() -> None:

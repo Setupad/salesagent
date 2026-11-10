@@ -1758,13 +1758,12 @@ def convert_format_ids_to_formats(format_ids: list[str], tenant_id: str | None =
 
 
 class FrequencyCap(LibraryFrequencyCap):
-    """Frequency capping extending AdCP library type with scope.
+    """Package frequency cap with a seller-specific scope extension."""
 
-    Inherits suppress_minutes: float from library.
-    Adds scope field for media buy vs package level capping.
-    """
-
-    scope: Literal["media_buy", "package"] = Field("media_buy", description="Apply at media buy or package level")
+    scope: Literal["media_buy", "package"] = Field(
+        "package",
+        description="Seller extension, not an AdCP field. GAM supports package scope only and rejects media_buy scope; caps are not shared across packages.",
+    )
 
 
 class TargetingCapability(SalesAgentBaseModel):

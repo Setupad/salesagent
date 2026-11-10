@@ -12,6 +12,7 @@ from typing import Any
 
 from googleads import ad_manager
 
+from src.adapters.gam.frequency import build_frequency_caps
 from src.adapters.gam.utils.error_handler import map_gam_exception
 from src.adapters.gam.utils.timeout_handler import timeout
 from src.core.errors.details import CapabilityRefusalDetails
@@ -911,52 +912,10 @@ class GAMOrdersManager:
                 "status": "READY",  # Always create as READY since creatives will be added
             }
 
-            # Add frequency caps - merge buyer's frequency cap with product config
-            frequency_caps = []
-
-            # First, add product-level frequency caps from impl_config
-            if impl_config.get("frequency_caps"):
-                for cap in impl_config["frequency_caps"]:
-                    frequency_caps.append(
-                        {
-                            "maxImpressions": cap["max_impressions"],
-                            "numTimeUnits": cap["time_range"],
-                            "timeUnit": cap["time_unit"],
-                        }
-                    )
-
-            # Then, add buyer's frequency cap from package's targeting_overlay if present
-            if (
-                package.targeting_overlay
-                and hasattr(package.targeting_overlay, "frequency_cap")
-                and package.targeting_overlay.frequency_cap
-            ):
-                freq_cap = package.targeting_overlay.frequency_cap
-                # Convert AdCP FrequencyCap (suppress_minutes) to GAM format
-                # AdCP: suppress_minutes (e.g., 60 = 1 hour)
-                # GAM: maxImpressions=1, numTimeUnits=X, timeUnit="MINUTE"/"HOUR"/"DAY"
-
-                # Determine best GAM time unit (int() cast needed because
-                # suppress_minutes is float after library type inheritance, GAM API expects int)
-                if freq_cap.suppress_minutes < 60:
-                    time_unit = "MINUTE"
-                    num_time_units = int(freq_cap.suppress_minutes)
-                elif freq_cap.suppress_minutes < 1440:  # Less than 24 hours
-                    time_unit = "HOUR"
-                    num_time_units = int(freq_cap.suppress_minutes // 60)
-                else:
-                    time_unit = "DAY"
-                    num_time_units = int(freq_cap.suppress_minutes // 1440)
-
-                frequency_caps.append(
-                    {
-                        "maxImpressions": 1,  # Suppress after 1 impression
-                        "numTimeUnits": num_time_units,
-                        "timeUnit": time_unit,
-                    }
-                )
-                log(f"Added buyer frequency cap: 1 impression per {num_time_units} {time_unit.lower()}(s)")
-
+            frequency_caps = build_frequency_caps(
+                impl_config.get("frequency_caps"),
+                package.targeting_overlay.frequency_cap if package.targeting_overlay else None,
+            )
             if frequency_caps:
                 line_item["frequencyCaps"] = frequency_caps
 
