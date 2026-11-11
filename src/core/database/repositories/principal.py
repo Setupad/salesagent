@@ -8,7 +8,7 @@ the admin views and the seed scripts come here to list, count, create and delete
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -75,6 +75,15 @@ class PrincipalRepository:
         return (
             self._session.scalar(select(func.count()).select_from(Principal).filter_by(tenant_id=self._tenant_id)) or 0
         )
+
+    def set_discount_percentage(self, principal_id: str, percentage: Decimal) -> tuple[Decimal, Decimal] | None:
+        principal = self.get(principal_id)
+        if principal is None:
+            return None
+        previous = principal.discount_percentage
+        principal.discount_percentage = percentage
+        principal.updated_at = datetime.now(UTC)
+        return previous, percentage
 
     def issue(self, **fields: Any) -> tuple[Principal, str]:
         """A new principal of this tenant with a freshly minted token, added to the session.

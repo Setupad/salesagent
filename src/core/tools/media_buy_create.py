@@ -1023,10 +1023,6 @@ def execute_approved_media_buy(
                         logger.error(f"[APPROVAL] {error_msg}")
                         return ApprovalResult.failed(error_msg)
 
-                    # Calculate CPM and impressions (convert Decimal to float for math operations)
-                    cpm = float(pricing_option_inner.rate) if pricing_option_inner.rate else 0.0
-                    impressions = int(total_budget / cpm * 1000) if cpm > 0 else 0
-
                     # Reconstruct package_pricing_info from package_config if available
                     # This includes the bid_price for auction pricing
                     pricing_info_from_config = package_config.get("pricing_info")
@@ -1037,6 +1033,11 @@ def execute_approved_media_buy(
                         # Fallback for buys stored without pricing_info: the option's terms
                         # with no bid_price, because the package that bid one is not on hand.
                         package_pricing_info[package_id] = pricing_info_for(pricing_option_inner)
+
+                    saved_pricing = package_pricing_info.get(package_id, {})
+                    saved_rate = saved_pricing.get("rate")
+                    cpm = float(saved_rate) if saved_rate is not None else 0.0
+                    impressions = int(total_budget / cpm * 1000) if cpm > 0 else 0
 
                     # Get targeting_overlay from package_config if present
                     # Fallback to "targeting" key for data written before fix.
@@ -1565,6 +1566,7 @@ def _validate_pricing_model_selection(
     package: Package | PackageRequest | AdcpPackageRequest,
     product: Any,  # ProductModel from database
     campaign_currency: str | None,
+    discount_percentage: Decimal = Decimal("0"),
 ) -> dict[str, Any]:
     """Validate pricing model selection for a package against product's pricing options.
 
@@ -1612,9 +1614,11 @@ def _validate_pricing_model_selection(
         first_option = unwrap_option(product.pricing_options[0])
         # The option's own terms, plus the one field it cannot supply: a currency-less
         # option falls back to the campaign's, which is a property of this request.
-        return pricing_info_for(first_option, bid_price=float(package.bid_price) if package.bid_price else None) | {
-            "currency": first_option.currency or campaign_currency or "USD"
-        }
+        return pricing_info_for(
+            first_option,
+            bid_price=float(package.bid_price) if package.bid_price else None,
+            discount_percentage=discount_percentage,
+        ) | {"currency": first_option.currency or campaign_currency or "USD"}
 
     # Find matching pricing option
     selected_option = None
@@ -1704,7 +1708,11 @@ def _validate_pricing_model_selection(
             )
 
     # Return validated pricing information
-    return pricing_info_for(selected_option, bid_price=float(package.bid_price) if package.bid_price else None)
+    return pricing_info_for(
+        selected_option,
+        bid_price=float(package.bid_price) if package.bid_price else None,
+        discount_percentage=discount_percentage,
+    )
 
 
 def _build_registered_agent_urls(registered_agents: list[Any], tenant_id: str) -> set[str]:
@@ -2453,6 +2461,7 @@ async def _create_media_buy_impl(
                                     package=package,
                                     product=product_map[product_id],
                                     campaign_currency=request_currency,
+                                    discount_percentage=identity.principal.discount_percentage,
                                 )
                                 # Store by index (package IDs aren't generated yet)
                                 package_pricing_info_by_index[idx] = pricing_info
@@ -3314,15 +3323,9 @@ async def _create_media_buy_impl(
                 else:
                     format_ids_to_use = []
 
-            # Get CPM from pricing_options
-            cpm = 10.0  # Default
-            if pkg_product.pricing_options and len(pkg_product.pricing_options) > 0:
-                first_option = pkg_product.pricing_options[0]
-                # adcp 2.14.0+ uses RootModel wrapper - access via .root
-                inner_option = getattr(first_option, "root", first_option)
-                rate = getattr(inner_option, "rate", None)
-                if rate:
-                    cpm = float(rate)
+            selected_pricing = package_pricing_info_by_index.get(idx - 1, {})
+            rate = selected_pricing.get("rate")
+            cpm = float(rate) if rate is not None else 10.0
 
             # Generate permanent package ID (not product_id)
             package_id = f"pkg_{pkg_product.product_id}_{secrets.token_hex(4)}_{idx}"
@@ -3544,12 +3547,15 @@ async def _create_media_buy_impl(
                     # Get impressions from request package if available (legacy field)
                     request_pkg = req.packages[i] if req.packages and i < len(req.packages) else None
                     impressions = getattr(request_pkg, "impressions", None) if request_pkg else None
+                    budget_data = getattr(resp_package, "budget", None)
+                    if budget_data is None and request_pkg is not None:
+                        budget_data = request_pkg.budget
 
                     package_config = {
                         "package_id": resp_package_id,
                         "name": getattr(resp_package, "name", None),  # Include package name from adapter response
                         "product_id": getattr(resp_package, "product_id", None),
-                        "budget": getattr(resp_package, "budget", None),
+                        "budget": budget_data,
                         "targeting_overlay": getattr(resp_package, "targeting_overlay", None),
                         "creative_ids": getattr(resp_package, "creative_ids", None),
                         "creative_assignments": getattr(resp_package, "creative_assignments", None),
@@ -3561,7 +3567,6 @@ async def _create_media_buy_impl(
 
                     # Extract pricing fields for dual-write from adapter response
                     budget_total = None
-                    budget_data = getattr(resp_package, "budget", None)
                     if budget_data:
                         if isinstance(budget_data, dict):
                             budget_total = budget_data.get("total")

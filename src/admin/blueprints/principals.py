@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from adcp.types import AuthenticationScheme
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, flash, g, jsonify, redirect, render_template, request, session, url_for
 from sqlalchemy import func, select
 
 from src.admin.services import DashboardService
@@ -17,8 +17,9 @@ from src.core.database.database_session import get_db_session
 from src.core.database.models import MediaBuy, PushNotificationConfig, Tenant
 from src.core.database.repositories.oauth_client import OAuthClientRepository
 from src.core.database.repositories.principal import PrincipalRepository
-from src.core.database.repositories.uow import PushNotificationConfigUoW
+from src.core.database.repositories.uow import PrincipalUoW, PushNotificationConfigUoW
 from src.core.exceptions import AdCPValidationError
+from src.core.helpers.pricing_helpers import parse_discount_percentage
 from src.core.oauth_service import generate_oauth_client_credentials
 from src.core.webhook_validator import webhook_url_for_log
 from src.core.webhooks.registration import accept_push_notification_primitives
@@ -422,6 +423,47 @@ def get_principal(tenant_id, principal_id):
     except Exception as e:
         logger.error(f"Error getting principal {principal_id}: {e}", exc_info=True)
         return jsonify({"error": f"Failed to get principal: {str(e)}"}), 500
+
+
+@principals_bp.route("/principal/<principal_id>/discount", methods=["POST"])
+@require_tenant_access()
+@log_admin_action(
+    "update_principal_discount",
+    extract_details=lambda result, **kwargs: {
+        "principal_id": (request.view_args or {}).get("principal_id"),
+        **getattr(g, "principal_discount_changes", {}),
+    },
+)
+def update_discount(tenant_id: str, principal_id: str) -> Response | tuple[Response, int]:
+    """Update an advertiser's discount percentage."""
+    data = request.get_json(silent=True) if request.is_json else None
+    try:
+        if not isinstance(data, dict) or set(data) != {"discount_percentage"}:
+            raise ValueError("Provide discount_percentage in a JSON object.")
+        value = data["discount_percentage"]
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValueError("Discount must be a string or number.")
+        percentage = parse_discount_percentage(str(value))
+    except ValueError as error:
+        record_admin_action_failure(error)
+        return jsonify({"error": str(error)}), 400
+
+    try:
+        with PrincipalUoW(tenant_id) as uow:
+            changes = uow.principals.set_discount_percentage(principal_id, percentage)
+        if changes is None:
+            record_admin_action_failure("Principal not found")
+            return jsonify({"error": "Principal not found"}), 404
+        previous, updated = changes
+        g.principal_discount_changes = {
+            "old_discount_percentage": format(previous, ".2f"),
+            "new_discount_percentage": format(updated, ".2f"),
+        }
+        return jsonify({"success": True, "discount_percentage": format(updated, ".2f")})
+    except Exception as error:
+        record_admin_action_failure(error)
+        logger.exception("Error updating discount for principal %s", principal_id)
+        return jsonify({"error": "Failed to update discount"}), 500
 
 
 @principals_bp.route("/principal/<principal_id>/rotate-token", methods=["POST"])

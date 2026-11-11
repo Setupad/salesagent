@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from decimal import Decimal
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -19,6 +20,7 @@ from src.core.schemas import CreateMediaBuyRequest
 from src.core.schemas._base import CreateMediaBuyResult
 from tests.factories.mint import mint
 from tests.harness._base import IntegrationEnv, json_safe
+from tests.harness._realize import realize_e2e
 from tests.harness.egress import EgressHatchMixin
 from tests.harness.transport import DeliverResult
 
@@ -118,6 +120,47 @@ class MediaBuyCreateEnv(EgressHatchMixin, IntegrationEnv):
         self.setup_default_account()
         product, pricing_option = self.setup_product_chain(tenant)
         return tenant, principal, product, pricing_option
+
+    def setup_discount_order(self, discount_percentage: Decimal) -> dict[str, Any]:
+        from tests.harness.create_request import build_create_request, pricing_option_id
+
+        tenant, _, product, option = self.setup_media_buy_data()
+        option.rate = Decimal("10")
+        second_product, second_option = self.setup_product_chain(tenant, product_id="prod_second")
+        second_option.rate = Decimal("20")
+        self._commit_factory_data()
+        self.set_order_discount(discount_percentage)
+        return build_create_request(
+            [
+                (product.product_id, pricing_option_id(option)),
+                (second_product.product_id, pricing_option_id(second_option)),
+            ],
+            budget=1000.0,
+        )
+
+    def _persist_order_discount(self, discount_percentage: Decimal) -> None:
+        from src.core.database.repositories.uow import PrincipalUoW
+
+        self._commit_factory_data()
+        with PrincipalUoW(self._tenant_id) as uow:
+            changed = uow.principals.set_discount_percentage(self._principal_id, discount_percentage)
+            assert changed is not None
+
+    @realize_e2e(_persist_order_discount)
+    def set_order_discount(self, discount_percentage: Decimal) -> None:
+        self._persist_order_discount(discount_percentage)
+
+    def saved_order_packages(self, media_buy_id: str) -> dict[str, dict[str, Any]]:
+        from copy import deepcopy
+
+        from src.core.database.repositories.uow import MediaBuyUoW
+
+        with MediaBuyUoW(self._tenant_id) as uow:
+            assert uow.media_buys is not None
+            return {
+                package.package_id: deepcopy(package.package_config)
+                for package in uow.media_buys.get_packages(media_buy_id)
+            }
 
     def setup_default_data(self, **tenant_kwargs: Any) -> tuple[Any, Any]:
         """The base seed, plus the rows the create_media_buy setup-checklist gate grades.

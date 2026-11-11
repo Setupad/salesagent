@@ -4,10 +4,29 @@ Handles the RootModel wrapper pattern used by adcp 2.14.0+ for discriminated uni
 and owns the ``pricing_info`` projection a package row stores.
 """
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
-def pricing_info_for(pricing_option: Any, *, bid_price: float | None = None) -> dict[str, Any]:
+def parse_discount_percentage(value: str) -> Decimal:
+    try:
+        percentage = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError("Discount must be a number between 0 and 99.99.") from exc
+    if not percentage.is_finite() or not Decimal("0") <= percentage <= Decimal("99.99"):
+        raise ValueError("Discount must be a number between 0 and 99.99.")
+    if percentage != percentage.quantize(Decimal("0.01")):
+        raise ValueError("Discount must have at most two decimal places.")
+    return percentage
+
+
+def discounted_rate(rate: Decimal, discount_percentage: Decimal) -> Decimal:
+    return rate * (Decimal("1") - discount_percentage / Decimal("100"))
+
+
+def pricing_info_for(
+    pricing_option: Any, *, bid_price: float | None = None, discount_percentage: Decimal = Decimal("0")
+) -> dict[str, Any]:
     """The ``pricing_info`` that ``MediaPackage.package_config`` stores for a package.
 
     NOT a spec shape: ``pricing_info`` appears in no pinned schema and is never received
@@ -21,9 +40,12 @@ def pricing_info_for(pricing_option: Any, *, bid_price: float | None = None) -> 
     terms, unwrapped for the RootModel members adcp 2.14.0+ uses.
     """
     option = getattr(pricing_option, "root", pricing_option)
+    rate = Decimal(str(option.rate)) if option.rate is not None else None
+    if option.is_fixed and rate is not None:
+        rate = discounted_rate(rate, discount_percentage)
     return {
         "pricing_model": option.pricing_model,
-        "rate": float(option.rate) if option.rate else None,
+        "rate": float(rate) if rate is not None else None,
         "currency": option.currency,
         "is_fixed": option.is_fixed,
         "bid_price": bid_price,

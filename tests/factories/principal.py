@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal
 
 import factory
 from factory import LazyAttribute, Sequence, SubFactory
@@ -39,6 +40,7 @@ class PrincipalFactory(factory.alchemy.SQLAlchemyModelFactory):
     tenant_id = LazyAttribute(lambda o: o.tenant.tenant_id)
     principal_id = Sequence(lambda n: f"principal_{n:04d}")
     name = LazyAttribute(lambda o: f"Test Advertiser {o.principal_id}")
+    discount_percentage = Decimal("0")
     # The row stores only the hash. The plaintext a test PRESENTS is derived from the
     # principal id by ``plaintext_token_for`` -- the harness computes the same value, so a
     # credential never has to be read back out of a table that does not hold it.

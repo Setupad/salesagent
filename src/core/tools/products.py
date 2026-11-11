@@ -6,6 +6,7 @@ shared implementation pattern from CLAUDE.md.
 
 import logging
 import time
+from decimal import Decimal
 from typing import Any, cast
 
 # FIXME(#1388): FormatId, ProductFilters have local subclasses; import from src.core.schemas (Pattern #7/#4).
@@ -25,6 +26,7 @@ from src.core.exceptions import (
 )
 from src.core.helpers import enum_value
 from src.core.helpers.channel_helpers import effective_channel_names
+from src.core.helpers.pricing_helpers import discounted_rate
 from src.core.resolved_identity import PublicIdentity
 from src.core.schemas import (
     GetProductsRequest,  # OURS, extending the SDK's — the accepted shape
@@ -746,6 +748,25 @@ async def _get_products_impl(req: GetProductsRequest, identity: PublicIdentity) 
         from src.services.package_forecast import refine_products
 
         eligible_products, refinement_applied = await refine_products(req, eligible_products, identity)
+
+    if identity.principal is not None and identity.principal.discount_percentage:
+        discounted_products = []
+        for product in eligible_products:
+            pricing_options = []
+            for option in product.pricing_options:
+                member = option.root
+                fixed_price = getattr(member, "fixed_price", None)
+                if fixed_price is not None:
+                    member = member.model_copy(
+                        update={
+                            "fixed_price": float(
+                                discounted_rate(Decimal(str(fixed_price)), identity.principal.discount_percentage)
+                            )
+                        }
+                    )
+                pricing_options.append(option.model_copy(update={"root": member}))
+            discounted_products.append(product.model_copy(update={"pricing_options": pricing_options}))
+        eligible_products = discounted_products
 
     resp = GetProductsResponse(
         products=cast(list[LibraryProduct], eligible_products),

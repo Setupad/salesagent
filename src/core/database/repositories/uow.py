@@ -41,6 +41,7 @@ from src.core.database.repositories.currency_limit import CurrencyLimitRepositor
 from src.core.database.repositories.effects import begin_effects, drain_after_commit, end_effects
 from src.core.database.repositories.idempotency_attempt import IdempotencyAttemptRepository
 from src.core.database.repositories.media_buy import MediaBuyRepository
+from src.core.database.repositories.principal import PrincipalRepository
 from src.core.database.repositories.product import ProductRepository
 from src.core.database.repositories.push_notification_config import PushNotificationConfigRepository
 from src.core.database.repositories.signing_key import SigningKeyRepository
@@ -291,6 +292,17 @@ class TenantConfigUoW(BaseUoW):
 
     def _clear_repos(self) -> None:
         self.tenant_config = None
+
+
+class PrincipalUoW(BaseUoW):
+    principals: PrincipalRepository
+
+    def _init_repos(self) -> None:
+        assert self._session is not None
+        self.principals = PrincipalRepository(self._session, self._tenant_id)
+
+    def _clear_repos(self) -> None:
+        del self.principals
 
 
 class AccountUoW(BaseUoW):

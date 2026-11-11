@@ -2017,6 +2017,7 @@ class Principal(SalesAgentBaseModel):
 
     principal_id: str
     name: str
+    discount_percentage: Decimal = Field(default=Decimal("0"), ge=0, le=Decimal("99.99"), decimal_places=2)
     platform_mappings: dict[str, Any]
     #: The counterparty's own AdCP agent URL, from onboarding, or None when none was
     #: recorded. It is the key-resolution input for RFC 9421 verification: security.mdx
@@ -2032,6 +2033,7 @@ class Principal(SalesAgentBaseModel):
         return cls(
             principal_id=row.principal_id,
             name=row.name,
+            discount_percentage=row.discount_percentage,
             platform_mappings=row.platform_mappings,
             agent_url=row.agent_url,
         )

@@ -775,6 +775,9 @@ class Principal(Base, JSONValidatorMixin):
     )
     principal_id: Mapped[str] = mapped_column(String(50), primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    discount_percentage: Mapped[Decimal] = mapped_column(
+        DECIMAL(5, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
     platform_mappings: Mapped[dict] = mapped_column(JSONType, nullable=False)
     #: sha256 of the token, never the token (src/core/credentials.py). Unique across tenants
     #: so a lookup by hash is an index hit; the resolver still scopes it by tenant.
@@ -823,6 +826,10 @@ class Principal(Base, JSONValidatorMixin):
         Index("idx_principals_tenant", "tenant_id"),
         Index("idx_principals_token_hash", "token_hash"),
         UniqueConstraint("tenant_id", "agent_url", name="uq_principals_tenant_agent_url"),
+        CheckConstraint(
+            "discount_percentage >= 0 AND discount_percentage <= 99.99",
+            name="ck_principals_discount_percentage",
+        ),
     )
 
     @classmethod

@@ -42,6 +42,7 @@ Transport support:
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -95,6 +96,22 @@ class ProductEnv(DatabaseFaultMixin, ProductMixin, IntegrationEnv):
 
     def _configure_mocks(self) -> None:
         self._configure_product_mocks()
+
+    def setup_advertiser_discount_catalog(self, discount: Decimal) -> tuple[Any, Any, Any]:
+        from tests.factories import PricingOptionFactory, PrincipalFactory, ProductFactory
+
+        tenant, default_buyer = self.setup_default_data()
+        discounted_buyer = PrincipalFactory(
+            tenant=tenant,
+            principal_id=f"{default_buyer.principal_id}_discounted",
+            discount_percentage=discount,
+        )
+        product = ProductFactory(tenant=tenant)
+        PricingOptionFactory(product=product, rate=Decimal("10.00"))
+        PricingOptionFactory(product=product, is_fixed=False, price_guidance={"floor": 2.0, "p50": 5.0})
+        self.switch_principal(discounted_buyer.principal_id)
+        self._commit_factory_data()
+        return product, default_buyer, discounted_buyer
 
     def call_impl(self, **kwargs: Any) -> Any:  # type: ignore[override]
         """Call _get_products_impl — async-aware sync bridge.
